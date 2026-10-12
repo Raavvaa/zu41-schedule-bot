@@ -9,3 +9,14 @@ playwright-report/
 *.secrets
 private_secrets/
 zu41_private.env
+
+node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
+.deploy-config.json
+*.sqlite
+*.sqlite3
+*.db
+*.log
+worker/dist/

@@ -1,0 +1,38 @@
+name: "Worker v2 checks"
+on:
+  push:
+    branches: ["feat/multiuser-worker-v2"]
+    paths: ["worker/**", "scripts/**", ".github/workflows/worker-check.yml"]
+  pull_request:
+    paths: ["worker/**", "scripts/**", ".github/workflows/worker-check.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install pinned dependencies
+        working-directory: worker
+        run: npm ci
+      - name: Validate source
+        working-directory: worker
+        run: npm run check
+      - name: Run workerd and persistent D1 tests
+        working-directory: worker
+        run: npm test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check existing morning bot regressions
+        run: |
+          python -m pip install -r requirements.txt
+          python -m unittest -v
+      - name: Check deploy bundle
+        working-directory: worker
+        run: npx wrangler deploy --dry-run --outdir /tmp/mkgik-worker-build

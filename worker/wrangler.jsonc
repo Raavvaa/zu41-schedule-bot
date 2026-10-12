@@ -1,0 +1,44 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mkgik-schedule-bot-v2",
+  "main": "src/index.mjs",
+  "compatibility_date": "2026-10-12",
+  "workers_dev": true,
+  "observability": {
+    "enabled": false
+  },
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
+  },
+  "vars": {
+    "DELIVERY_ENABLED": "false",
+    "MAX_USERS": "50"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mkgik-schedule-bot-v2",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "TICKS",
+        "queue": "mkgik-schedule-bot-v2-ticks"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "mkgik-schedule-bot-v2-ticks",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 0,
+        "max_concurrency": 4
+      }
+    ]
+  }
+}
