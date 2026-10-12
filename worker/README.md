@@ -30,7 +30,7 @@ Queues Free: 10 000 операций/сутки. В норме запись/чт
 
 ## Настройка с телефона
 
-Войти в Cloudflare (Free) и убедиться, что Workers платный план не включён. Для GitHub deployment требуется Cloudflare API token с Workers Scripts Edit, Workers Subdomain Read, D1 Edit и Queues Edit только в выбранном аккаунте. Не присылай токен в чат.
+Войти в Cloudflare (Free) и убедиться, что Workers платный план не включён. Для GitHub deployment требуется Cloudflare API token с Workers Scripts Edit, D1 Edit и Queues Edit только в выбранном аккаунте. Не присылай токен в чат.
 
 В GitHub Settings → Secrets and variables → Actions добавь:
 
