@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+.pytest_cache/
+playwright-report/
+*.env
+*.secret
+*.secrets
+private_secrets/
+zu41_private.env
