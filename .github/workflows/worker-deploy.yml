@@ -1,0 +1,34 @@
+name: "Worker v2 staging deploy"
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mkgik-worker-staging-deploy
+  cancel-in-progress: false
+jobs:
+  staging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: f3e528dfb17eb1a4f7533bea79167ed02aa20f46
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci
+        working-directory: worker
+      - run: npm test
+        working-directory: worker
+      - name: Deploy closed staging and verify real source and owner-only Telegram delivery
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          OWNER_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          FREE_PLAN_CONFIRMED: ${{ vars.FREE_PLAN_CONFIRMED }}
+        run: node scripts/deploy-worker.mjs
