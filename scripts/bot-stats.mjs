@@ -4,7 +4,7 @@ if(e.GITHUB_REPOSITORY!=='Raavvaa/zu41-schedule-bot')throw new Error('Wrong repo
 async function cf(path,body){
  let r,j;
  try{r=await fetch('https://api.cloudflare.com/client/v4/accounts/'+e.CLOUDFLARE_ACCOUNT_ID+path,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+e.CLOUDFLARE_API_TOKEN,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(30000)});j=await r.json();}catch{throw new Error('Cloudflare query failed; private details withheld');}
- if(!r.ok||j.success!==true)throw new Error('Cloudflare rejected read-only query: HTTP '+r.status);
+ if(!r.ok||j.success!==true)throw new Error('Cloudflare rejected read-only query: HTTP '+r.status+'; '+(j.errors??[]).map(x=>String(x.message??x.code).slice(0,180)).join('; '));
  return j.result;
 }
 const db=(await cf('/d1/database')).find(x=>x.name==='mkgik-schedule-bot-v2');
@@ -23,7 +23,7 @@ out.delivery_attempts=await sql(`SELECT outcome,count(*) AS n FROM attempts WHER
 out.dialog_states=await sql(`SELECT state,count(*) AS n FROM dialogs GROUP BY state`);
 out.retained_incoming=await sql(`SELECT count(*) AS nonempty_payloads FROM updates WHERE payload<>'{}' AND created_at>=?`,[since]);
 // Categories of bot responses, not literal historical student messages.
-out.response_categories=await sql(`SELECT CASE
+try { out.response_categories=await sql(`SELECT CASE
  WHEN payload LIKE '%Привет!%' THEN 'welcome'
  WHEN payload LIKE '%Выбери группу%' OR payload LIKE '%Совпадений нет%' THEN 'group_search_or_list'
  WHEN payload LIKE '%Какая подгруппа%' THEN 'subgroup_selection'
@@ -35,7 +35,7 @@ out.response_categories=await sql(`SELECT CASE
  WHEN payload LIKE '%Твои настройки сохранены%' THEN 'existing_user_menu'
  WHEN payload LIKE '%⚠️ Не удалось выполнить запрос%' THEN 'request_error'
  ELSE 'other_screen' END AS category,count(*) AS n
- FROM jobs WHERE kind='reply' AND state='sent' AND created_at>=? AND payload IS NOT NULL GROUP BY category ORDER BY n DESC`,[since]);
+ FROM jobs WHERE kind='reply' AND state='sent' AND created_at>=? AND payload IS NOT NULL GROUP BY category ORDER BY n DESC`,[since]); } catch { out.response_categories=[{category:"unavailable"}]; }
 out.source_states=await sql('SELECT status,count(*) AS n FROM schedules GROUP BY status');
 out.runtime=await sql("SELECT name,value FROM meta WHERE name IN ('last_cron','last_consumer')");
 out.queue_budget=await sql('SELECT date,used FROM queue_budgets ORDER BY date DESC LIMIT 3');
