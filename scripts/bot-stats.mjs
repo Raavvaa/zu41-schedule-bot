@@ -24,16 +24,16 @@ out.dialog_states=await sql(`SELECT state,count(*) AS n FROM dialogs GROUP BY st
 out.retained_incoming=await sql(`SELECT count(*) AS nonempty_payloads FROM updates WHERE payload<>'{}' AND created_at>=?`,[since]);
 // Categories of bot responses, not literal historical student messages.
 out.response_categories=await sql(`SELECT CASE
- WHEN json_extract(payload,'$.text') LIKE 'Привет!%' THEN 'welcome'
- WHEN json_extract(payload,'$.text') LIKE 'Выбери группу%' OR json_extract(payload,'$.text') LIKE 'Совпадений нет%' THEN 'group_search_or_list'
- WHEN json_extract(payload,'$.text') LIKE 'Какая подгруппа%' THEN 'subgroup_selection'
- WHEN json_extract(payload,'$.text') LIKE '%Когда присылать расписание?%' THEN 'morning_setup'
- WHEN json_extract(payload,'$.text') LIKE 'Напоминать перед каждой парой?%' THEN 'reminder_setup'
- WHEN json_extract(payload,'$.text') LIKE 'Сейчас идёт:%' OR json_extract(payload,'$.text') LIKE 'Следующая пара:%' OR json_extract(payload,'$.text') LIKE 'На сегодня следующих пар%' THEN 'current_or_next'
- WHEN json_extract(payload,'$.text') LIKE '📅 %' THEN 'schedule_or_schedule_warning'
- WHEN json_extract(payload,'$.text') LIKE 'Группа:%' THEN 'settings_or_confirmation'
- WHEN json_extract(payload,'$.text') LIKE 'Твои настройки сохранены%' THEN 'existing_user_menu'
- WHEN json_extract(payload,'$.text') LIKE '⚠️ Не удалось выполнить запрос%' THEN 'request_error'
+ WHEN payload LIKE '%Привет!%' THEN 'welcome'
+ WHEN payload LIKE '%Выбери группу%' OR payload LIKE '%Совпадений нет%' THEN 'group_search_or_list'
+ WHEN payload LIKE '%Какая подгруппа%' THEN 'subgroup_selection'
+ WHEN payload LIKE '%%Когда присылать расписание?%' THEN 'morning_setup'
+ WHEN payload LIKE '%Напоминать перед каждой парой?%' THEN 'reminder_setup'
+ WHEN payload LIKE '%Сейчас идёт:%' OR payload LIKE '%Следующая пара:%' OR payload LIKE '%На сегодня следующих пар%' THEN 'current_or_next'
+ WHEN payload LIKE '%📅 %' THEN 'schedule_or_schedule_warning'
+ WHEN payload LIKE '%Группа:%' THEN 'settings_or_confirmation'
+ WHEN payload LIKE '%Твои настройки сохранены%' THEN 'existing_user_menu'
+ WHEN payload LIKE '%⚠️ Не удалось выполнить запрос%' THEN 'request_error'
  ELSE 'other_screen' END AS category,count(*) AS n
  FROM jobs WHERE kind='reply' AND state='sent' AND created_at>=? AND payload IS NOT NULL GROUP BY category ORDER BY n DESC`,[since]);
 out.source_states=await sql('SELECT status,count(*) AS n FROM schedules GROUP BY status');
