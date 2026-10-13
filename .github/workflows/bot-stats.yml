@@ -1,0 +1,19 @@
+name: Bot usage statistics (read only)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  statistics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Read anonymous bot counters
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/bot-stats.mjs
