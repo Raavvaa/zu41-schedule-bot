@@ -8,7 +8,10 @@ for(const k of ['CLOUDFLARE_API_TOKEN','CLOUDFLARE_ACCOUNT_ID','OWNER_CHAT_ID','
 const sha=spawnSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).stdout.trim();
 if(!/^[a-f0-9]{40}$/.test(sha))throw new Error('Source SHA missing');
 async function request(url,token,body){
- let r,j;try{r=await fetch(url,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+token,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(30000)});j=await r.json();}catch{throw new Error('Service connection failed; private details withheld');}
+ let r,j;
+ try{r=await fetch(url,{method:body?'POST':'GET',headers:{...(token?{Authorization:'Bearer '+token}:{}),'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(30000)});}
+ catch(error){const code=error.cause?.code??error.name;throw new Error('Service connection failed: '+(/^[A-Z_a-z0-9]+$/.test(code)?code:'network')+'; private details withheld');}
+ try{j=await r.json();}catch{throw new Error('Service returned non-JSON: HTTP '+r.status+'; private details withheld');}
  if(!r.ok||j.success===false||j.ok===false)throw new Error('Service check failed: HTTP '+r.status);return j;
 }
 const cf=async(path,body)=>(await request('https://api.cloudflare.com/client/v4/accounts/'+e.CLOUDFLARE_ACCOUNT_ID+path,e.CLOUDFLARE_API_TOKEN,body)).result;
@@ -22,7 +25,11 @@ const old=await request('https://api.github.com/repos/Raavvaa/zu41-schedule-bot/
 if(old.state!=='disabled_manually')throw new Error('Legacy sender unexpectedly enabled');
 const health=await request(url+'/health','');
 if(health.mode!=='active'||health.fast_reply!=='true')throw new Error('Existing public fast sender not active');
-const hook=await request('https://api.telegram.org/bot'+e.TELEGRAM_BOT_TOKEN+'/getWebhookInfo','',{});
+let hook;
+for(let i=0;i<3;i++){
+ try{hook=await request('https://api.telegram.org/bot'+e.TELEGRAM_BOT_TOKEN+'/getWebhookInfo','');break;}
+ catch(error){if(i===2)throw error;await new Promise(r=>setTimeout(r,1000));}
+}
 if(hook.result.url!==url+'/telegram')throw new Error('Unexpected webhook destination');
 const config=JSON.parse(await readFile('worker/wrangler.jsonc','utf8'));
 config.d1_databases[0].database_id=db.uuid;
