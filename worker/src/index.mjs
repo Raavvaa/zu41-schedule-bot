@@ -1,8 +1,8 @@
-import {reserveQueue,consume} from './dispatch.mjs';
+import {reserveQueue,consume,queueReplies} from './dispatch.mjs';
 import {one,rows,run,dayKey,sql,telegram} from './core.mjs';
 import {catalog,getSchedule} from './source.mjs';
 import {cleanUpdate,processUpdate} from './dialog.mjs';
-import {planningTick,deliveryTick,refreshTick,cleanup} from './scheduler.mjs';
+import {planningTick,deliveryTick,refreshTick,cleanup,fastReplies} from './scheduler.mjs';
 const json=(x,status=200)=>Response.json(x,{status});
 export async function safeEqual(a,b){
  if(!a||!b)return false;
@@ -10,7 +10,7 @@ export async function safeEqual(a,b){
  const [aa,bb]=await Promise.all([digest(a),digest(b)]);let diff=0;
  const x=new Uint8Array(aa),y=new Uint8Array(bb);for(let i=0;i<x.length;i++)diff|=x[i]^y[i];return !diff;
 }
-export async function webhook(request,env,now=Date.now()){
+export async function webhook(request,env,now=Date.now(),ctx=null){
  if(!await safeEqual(request.headers.get('X-Telegram-Bot-Api-Secret-Token'),env.WEBHOOK_SECRET))return json({ok:false},403);
  if(Number(request.headers.get('content-length'))>65536)return json({ok:false},413);
  let raw;try{const text=await request.text();if(text.length>65536)return json({ok:false},413);raw=JSON.parse(text);}catch{return json({ok:false},400);}
@@ -19,15 +19,27 @@ export async function webhook(request,env,now=Date.now()){
  // Closed staging does not subscribe real students or alter their settings.
  if(env.DELIVERY_ENABLED!=='true'&&String(update.user_id)!==String(env.OWNER_CHAT_ID))return json({ok:true});
  const inserted=await run(env,'INSERT OR IGNORE INTO updates(update_id,user_id,payload,created_at) VALUES(?,?,?,?)',update.update_id,update.user_id,JSON.stringify(update),now);
- if(inserted.meta.changes){await processUpdate(env,update,now);await deliveryTick(env,update.user_id%8,now,update.user_id);}
+ if(inserted.meta.changes){
+  // Finish dialog persistence before acknowledging Telegram. Background delivery
+  // can be cancelled safely: the outbox and Cron recovery already exist in D1.
+  const processed=await processUpdate(env,update,now,ctx);
+  if(env.FAST_REPLY==='true'||env.FAST_REPLY==='owner'&&String(update.user_id)===String(env.OWNER_CHAT_ID)){
+   const send=async()=>{
+    if(!processed)return queueReplies(env,update.user_id,2);
+    const result=await fastReplies(env,update.user_id);
+    if(result.pending)await queueReplies(env,update.user_id,result.delay);
+   };
+   if(ctx)ctx.waitUntil(send().catch(()=>{}));else await send();
+  }else await deliveryTick(env,update.user_id%8,now,update.user_id);
+ }
  return json({ok:true});
 }
 export default {
- async fetch(request,env){
+ async fetch(request,env,ctx){
   try{
    const url=new URL(request.url);
-   if(url.pathname==='/health'&&request.method==='GET')return json({ok:true,version:'2.0.0',mode:env.DELIVERY_ENABLED==='true'?'active':'staging'});
-   if(url.pathname==='/telegram'&&request.method==='POST')return await webhook(request,env);
+   if(url.pathname==='/health'&&request.method==='GET')return json({ok:true,version:'2.1.0',source_sha:env.SOURCE_SHA??null,fast_reply:env.FAST_REPLY??'false',mode:env.DELIVERY_ENABLED==='true'?'active':'staging'});
+   if(url.pathname==='/telegram'&&request.method==='POST')return await webhook(request,env,Date.now(),ctx);
    if(!url.pathname.startsWith('/ops/')||!await safeEqual(request.headers.get('Authorization'),`Bearer ${env.ADMIN_SECRET}`))return json({ok:false},404);
    if(!env.ADMIN_SECRET)return json({ok:false},403);
    if(url.pathname==='/ops/probe'&&request.method==='POST'){

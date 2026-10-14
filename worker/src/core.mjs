@@ -55,7 +55,7 @@ export function nextLesson(s,u,now){
 }
 export async function telegram(env,method,data) {
  try {
-  const res=await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data),signal:AbortSignal.timeout(12000)});
+  const res=await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data),signal:AbortSignal.timeout(8000)});
   const p=await res.json();
   if(p.ok===true)return {ok:true,message_id:p.result?.message_id,result:p.result};
   if(res.status===429||p.error_code===429)return {ok:false,type:'rate_limit',retry_after:Math.max(1,Number(p.parameters?.retry_after)||30)};

@@ -66,7 +66,7 @@ async function defer(env,j,now,delay,error){
   sql(env,'INSERT INTO attempts(job_key,attempt,at,outcome) VALUES(?,?,?,?)',j.job_key,j.attempts+1,now,error)
  ]);
 }
-export async function deliverJob(env,j,now){
+export async function deliverJob(env,j,now,clock=()=>now){
  const claim=await run(env,"UPDATE jobs SET state='sending',attempts=attempts+1,lease_until=? WHERE job_key=? AND state IN ('pending','retry') AND due_at<=?",now+30000,j.job_key,now);
  if(!claim.meta.changes)return false;
  if(now>=j.expires_at)return finish(env,j,'skipped',now,'expired');
@@ -113,8 +113,12 @@ export async function deliverJob(env,j,now){
  if(!allowed.meta.changes)return defer(env,j,now,1000,'rate_budget');
  const chatLock=await lock(env,'chat:'+j.chat_id,now,1000);
  if(!chatLock)return defer(env,j,now,1000,'rate_budget');
- const r=await telegram(env,'sendMessage',{chat_id:j.chat_id,...payload,link_preview_options:{is_disabled:true}});
- if(r.ok&&Number.isInteger(r.message_id)){await finish(env,j,'sent',now,null,r.message_id);return true;}
+ const inFlight=await lock(env,'chat-send:'+j.chat_id,now,20000);
+ if(!inFlight)return defer(env,j,now,1000,'rate_budget');
+ let r;
+ try{r=await telegram(env,'sendMessage',{chat_id:j.chat_id,...payload,link_preview_options:{is_disabled:true}});}
+ finally{await unlock(env,'chat-send:'+j.chat_id,inFlight);}
+ if(r.ok&&Number.isInteger(r.message_id)){await finish(env,j,'sent',clock(),null,r.message_id);return true;}
  if(r.type==='rate_limit'){
   await run(env,"INSERT INTO meta VALUES('telegram_pause',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value",String(now+r.retry_after*1000));
   return defer(env,j,now,r.retry_after*1000,'rate_limit');
@@ -154,4 +158,39 @@ export async function cleanup(env,now){
   sql(env,'DELETE FROM schedules WHERE date<?',addDays(dayKey(now),-14)),
   sql(env,'DELETE FROM locks WHERE expires_at<?',now-86400000)
  ]);
+}
+
+// Replies have a small, paced fast path, independent of the minute/lane scheduler.
+// D1 remains authoritative; every sender uses deliverJob's atomic claim and chat limit.
+export async function fastReplies(env,userId,clock=Date.now,sleep=ms=>new Promise(r=>setTimeout(r,ms))){
+ const started=clock(),deadline=started+18000;
+ const name='reply-drain:'+userId,owner=await lock(env,name,started,25000);
+ if(!owner)return {pending:true,delay:2};
+ let sent=0;
+ try{
+  for(let i=0;i<2;i++){
+   const j=await one(env,`SELECT * FROM jobs WHERE user_id=? AND kind='reply'
+    AND state IN ('pending','retry','sending') ORDER BY created_at,rowid LIMIT 1`,userId);
+   if(!j)return {pending:false,sent};
+   let now=clock();
+   if(j.state==='sending'){
+    if(j.lease_until<=now)await run(env,"UPDATE jobs SET state='uncertain',last_error='lease_expired' WHERE job_key=? AND state='sending' AND lease_until<=?",j.job_key,now);
+    return {pending:true,delay:2,sent};
+   }
+   // A previous Cron sender can be using the same chat. Wait before claiming,
+   // instead of turning a one-second cooldown into a one-minute retry.
+   const cooldown=await one(env,'SELECT expires_at FROM locks WHERE name=?','chat:'+j.chat_id);
+   const pause=await one(env,"SELECT value FROM meta WHERE name='telegram_pause'");
+   const ready=Math.max(j.due_at,cooldown?.expires_at??0,Number(pause?.value)||0);
+   const wait=Math.max(0,ready-now)+ (ready>now?100:0);
+   if(wait>1500||now+wait+8500>deadline)return {pending:true,delay:Math.max(1,Math.ceil((ready-now)/1000)),sent};
+   if(wait)await sleep(wait);
+   if(await deliverJob(env,j,clock(),clock))sent++;
+   // Stop on Telegram errors, including ambiguous delivery. Never blindly resend.
+   const state=await one(env,'SELECT state,due_at FROM jobs WHERE job_key=?',j.job_key);
+   if(state?.state==='retry')return {pending:true,delay:Math.max(1,Math.ceil((state.due_at-clock())/1000)),sent};
+  }
+  const pending=await one(env,"SELECT 1 AS yes FROM jobs WHERE user_id=? AND kind='reply' AND state IN ('pending','retry','sending') LIMIT 1",userId);
+  return {pending:!!pending,delay:1,sent};
+ }finally{await unlock(env,name,owner);}
 }

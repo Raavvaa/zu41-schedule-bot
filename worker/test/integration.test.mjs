@@ -172,3 +172,58 @@ test('queue dispatcher is idempotent and daily free-budget guard is atomic',asyn
  await db.prepare("INSERT OR REPLACE INTO queue_budgets VALUES('2026-10-12',2799)").run();
  const rs=await Promise.all([call('/test/reserve?now='+clock+'&n=1',{}),call('/test/reserve?now='+clock+'&n=1',{})]);assert.equal(rs.filter(r=>r.data.reserved).length,1);
 });
+
+async function replies(uid,count,clock=now){
+ for(let i=0;i<count;i++)await db.prepare(`INSERT INTO jobs(job_key,user_id,chat_id,lane,date,kind,due_at,expires_at,revision,payload,created_at) VALUES(?,?,?,?,?,'reply',?,?,0,?,?)`).bind('fast-'+uid+'-'+i,uid,uid,uid%8,dayKey(clock),clock,clock+600000,JSON.stringify({text:'part '+i,parse_mode:'HTML'}),clock).run();
+}
+async function fast(uid,clock=now){
+ const r=(await call('/test/fast?user='+uid+'&now='+clock,{})).data;
+ assert.ok(r.budget.queries<=45,'fast consumer stays below 50 D1 subrequests');return r;
+}
+test('fast replies preserve order with second-level pacing, not minute Cron',async()=>{
+ await clearJobs();await replies(1001,4);let a=await fast(1001);
+ assert.equal(a.sent,2);assert.equal(a.pending,true);assert.ok(a.elapsed>=1000&&a.elapsed<2000);
+ let b=await fast(1001,now+a.elapsed);assert.equal(b.sent,2);assert.ok(b.elapsed<3000);
+ assert.deepEqual(sends.map(x=>x.text),['part 0','part 1','part 2','part 3']);
+ assert.ok(a.elapsed+b.elapsed<5000,'four parts avoid old 1-3 minute delay');
+ console.log('Fast four-part simulated time / D1 per invocation:',JSON.stringify({ms:a.elapsed+b.elapsed,queries:Math.max(a.budget.queries,b.budget.queries)}));
+});
+test('fast sender, duplicate fast sender and Cron share claims without duplicates',async()=>{
+ await clearJobs();await replies(1001,1);
+ await Promise.all([fast(1001),fast(1001),tick('deliver',1,now)]);
+ assert.equal(sends.length,1);
+ await fast(1001,now+40000);assert.equal(sends.length,1,'restart cannot resend completed job');
+});
+test('fast reply 429 waits until retry_after; unknown delivery is never resent',async()=>{
+ await clearJobs();await replies(1001,1);nextError=429;
+ const limited=await fast(1001);assert.equal(limited.delay,3);assert.equal(sends.length,0);
+ await fast(1001,now+1000);assert.equal(sends.length,0);
+ await fast(1001,now+3000);assert.equal(sends.length,1);
+ await clearJobs();await replies(1001,1);nextError='uncertain';await fast(1001);await fast(1001,now+40000);
+ assert.equal(sends.length,0);assert.equal((await db.prepare("SELECT state FROM jobs WHERE job_key='fast-1001-0'").first()).state,'uncertain');
+});
+test('fast path skips expired replies and respects an in-flight chat sender',async()=>{
+ await clearJobs();await replies(1001,1);
+ await db.prepare('INSERT INTO locks VALUES(?,?,?)').bind('chat-send:1001','another',now+20000).run();
+ await fast(1001);assert.equal(sends.length,0);
+ await fast(1001,now+700000);assert.equal(sends.length,0);
+ assert.equal((await db.prepare("SELECT state FROM jobs WHERE job_key='fast-1001-0'").first()).state,'skipped');
+});
+test('full webhook fast path persists settings and stays within subrequest budget',async()=>{
+ await clearJobs();const id=updateSeq++;
+ const body={update_id:id,message:{from:{id:10001},chat:{id:10001,type:'private'},text:'/start'}};
+ const result=await call('/test/fast-webhook',body,{'X-Telegram-Bot-Api-Secret-Token':'test-secret'});
+ assert.equal(result.data.status,200);assert.equal(sends.length,1);assert.ok(result.data.budget.queries<=45);
+ assert.equal((await db.prepare('SELECT state FROM updates WHERE update_id=?').bind(id).first()).state,'done');
+ const count=sourceCalls;await call('/test/fast-webhook',{...body,update_id:updateSeq++},{'X-Telegram-Bot-Api-Secret-Token':'test-secret'});
+ assert.equal(sourceCalls,count,'menu does not fetch timetable source');
+ console.log('Full fast webhook D1 budget:',JSON.stringify(result.data.budget));
+});
+
+test('cached full week uses the fast path within D1 query allowance',async()=>{
+ await clearJobs();
+ const clock=Date.now();await insertUser(10001,63,clock);
+ const result=await call('/test/fast-webhook',{update_id:updateSeq++,message:{from:{id:10001},chat:{id:10001,type:'private'},text:'🗓 Неделя'}},{'X-Telegram-Bot-Api-Secret-Token':'test-secret'});
+ assert.ok(result.data.budget.queries<=45,JSON.stringify(result.data.budget));
+ assert.ok(sends.length>=1);console.log('Full-week fast webhook D1 budget:',JSON.stringify(result.data.budget));
+});

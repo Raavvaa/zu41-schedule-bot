@@ -3,7 +3,7 @@ import {countedDB} from './budget.mjs';
 // Local workerd-only test entry. This file is NEVER the deployed Worker entry.
 import worker,{webhook} from '../src/index.mjs';
 import {parseWeek,parseGroups,getSchedule,catalog} from '../src/source.mjs';
-import {planningTick,planUser,deliveryTick,refreshTick,deliverJob} from '../src/scheduler.mjs';
+import {planningTick,planUser,deliveryTick,refreshTick,deliverJob,fastReplies} from '../src/scheduler.mjs';
 import {one} from '../src/core.mjs';
 export default {async fetch(req,env,ctx){
  const stats={queries:0,read:0,written:0};env={...env,DB:countedDB(env.DB,stats)};
@@ -11,6 +11,15 @@ export default {async fetch(req,env,ctx){
  if(url.pathname==='/test/parse')return Response.json(await parseWeek(new Response(await req.text()),url.searchParams.get('group')));
  if(url.pathname==='/test/catalog'){const gs=await catalog(env,Number(url.searchParams.get('now')));return Response.json({count:gs.length,hasExample:gs.some(g=>g.id===63)});}
  if(url.pathname==='/test/groups')return Response.json(await parseGroups(new Response(await req.text())));
+ if(url.pathname==='/test/fast'){
+  let clock=Number(url.searchParams.get('now'));const start=clock;
+  const result=await fastReplies(env,Number(url.searchParams.get('user')),()=>clock,async ms=>{clock+=ms;});
+  return Response.json({...result,elapsed:clock-start,budget:stats});
+ }
+ if(url.pathname==='/test/fast-webhook'){
+  const r=await webhook(req,{...env,FAST_REPLY:'true'},Date.now());
+  return Response.json({status:r.status,budget:stats});
+ }
  if(url.pathname==='/test/webhook')return webhook(req,env,Number(url.searchParams.get('now')));
  if(url.pathname==='/test/dispatch'){const queued=[];env.TICKS={sendBatch:async batch=>queued.push(...batch)};await dispatch(env,Number(url.searchParams.get('now')));return Response.json({queued:queued.length,budget:stats});}
  if(url.pathname==='/test/reserve'){return Response.json({reserved:await reserveQueue(env,Number(url.searchParams.get('n')),Number(url.searchParams.get('now')))});}

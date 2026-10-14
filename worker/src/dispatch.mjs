@@ -1,11 +1,17 @@
+import {processUpdate} from './dialog.mjs';
 import {sql,one,rows,run,dayKey,addDays,lock} from './core.mjs';
-import {planningTick,deliveryTick,refreshTick,cleanup} from './scheduler.mjs';
+import {planningTick,deliveryTick,refreshTick,cleanup,fastReplies} from './scheduler.mjs';
 // <=2800 enqueued messages/day ~=8400 normal queue operations; reserve headroom
 // for retries, and prioritize minute ticks and delivery over background refresh.
 export async function reserveQueue(env,n,now,background=false){
  const date=new Date(now).toISOString().slice(0,10);const limit=background?2400:2800;
  const r=await run(env,'INSERT INTO queue_budgets(date,used) VALUES(?,?) ON CONFLICT(date) DO UPDATE SET used=used+excluded.used WHERE used+excluded.used<=?',date,n,limit);
  return !!r.meta.changes;
+}
+// Only overflow/contended replies consume an extra queue message. Budget is shared
+// with Cron, and exhaustion leaves durable jobs for its existing recovery path.
+export async function queueReplies(env,userId,delay=1){
+ if(await reserveQueue(env,1,Date.now()))await env.TICKS.send({type:'reply',user_id:userId},{delaySeconds:Math.min(43200,Math.max(1,delay))});
 }
 export async function dispatch(env,now){
  // Repeated queue messages and cron minutes do not schedule the same work twice.
@@ -28,7 +34,17 @@ export async function consume(batch,env,now=Date.now()){
  for(const message of batch.messages){
   const b=message.body;
   try{
-   if(b.type==='dispatch')await dispatch(env,now);
+   if(b.type==='reply'&&Number.isSafeInteger(b.user_id)&&(env.FAST_REPLY==='true'||env.FAST_REPLY==='owner'&&String(b.user_id)===String(env.OWNER_CHAT_ID))){
+    // Retry an update that was persisted while another dialog held its user lock.
+    const waiting=await one(env,"SELECT payload FROM updates WHERE user_id=? AND state='pending' ORDER BY created_at LIMIT 1",b.user_id);
+    if(waiting){
+     await processUpdate(env,JSON.parse(waiting.payload),Date.now());
+     await queueReplies(env,b.user_id,1);
+    }else{
+     const result=await fastReplies(env,b.user_id);
+     if(result.pending)await queueReplies(env,b.user_id,result.delay);
+    }
+   }else if(b.type==='dispatch')await dispatch(env,now);
    else if(Number.isInteger(b.lane)&&b.lane>=0&&b.lane<8){
     if(b.type==='plan')await planningTick(env,b.lane,now);
     else if(b.type==='deliver')await deliveryTick(env,b.lane,now,null,()=>Date.now());

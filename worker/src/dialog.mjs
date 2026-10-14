@@ -19,12 +19,12 @@ async function saveDialog(env,id,state,draft,now){
 }
 function keyboard(id,nonce,rows){return {inline_keyboard:rows.map(row=>row.map(([text,action])=>({text,callback_data:`v:${id}:${nonce}:${action}`})))};}
 function summary(d){return `Группа: ${d.group_name}\nПодгруппа: ${d.subgroup==='both'?'обе':d.subgroup}\nУтром: ${d.morning_enabled?d.morning_time+' МСК':'выключено'}\nНапоминания: ${d.reminders_enabled?'за '+d.reminder_minutes+' минут':'выключены'}\nВ дни без занятий: ${d.send_empty?'присылать':'не присылать'}\n${d.paused_until?'Пауза до '+dayKey(d.paused_until):'Пауза не включена'}`;}
-export async function processUpdate(env,update,now=Date.now()){
+export async function processUpdate(env,update,now=Date.now(),ctx=null){
  const owner=await lock(env,'user:'+update.user_id,now,30000);if(!owner)return false;
  try{
   const claim=await run(env,"UPDATE updates SET state='processing' WHERE update_id=? AND state='pending'",update.update_id);
   if(!claim.meta.changes)return true;
-  await dialog(env,update,now);
+  await dialog(env,update,now,ctx);
   await run(env,"UPDATE updates SET state='done',payload='{}' WHERE update_id=?",update.update_id);
   return true;
  }catch{
@@ -34,7 +34,8 @@ export async function processUpdate(env,update,now=Date.now()){
   return false;
  }finally{await unlock(env,'user:'+update.user_id,owner);}
 }
-async function dialog(env,u,now){
+async function dialog(env,u,now,ctx){
+ const answer=async data=>{const p=telegram(env,'answerCallbackQuery',data);if(ctx)ctx.waitUntil(p);else await p;};
  let saved=await one(env,'SELECT * FROM users WHERE user_id=?',u.user_id);
  let session=await one(env,'SELECT * FROM dialogs WHERE user_id=?',u.user_id);
  let draft=session?JSON.parse(session.draft):{...defaults};let action=null;
@@ -43,11 +44,11 @@ async function dialog(env,u,now){
  if(u.callback){
   const m=u.callback.match(/^v:(\d+):([\da-f]{6}):([\w:-]+)$/);
   if(!m||Number(m[1])!==u.user_id||!session||m[2]!==session.nonce||now-session.updated_at>86400000){
-   if(u.callback_id)await telegram(env,'answerCallbackQuery',{callback_query_id:u.callback_id,text:'Кнопка устарела. Открой /start.',show_alert:false});
+   if(u.callback_id)await answer({callback_query_id:u.callback_id,text:'Кнопка устарела. Открой /start.',show_alert:false});
    return;
   }
   action=m[3];
-  if(u.callback_id)await telegram(env,'answerCallbackQuery',{callback_query_id:u.callback_id});
+  if(u.callback_id)await answer({callback_query_id:u.callback_id});
  }
  const groupList=async(query='',page=0,mode=draft.mode??'subscribe')=>{
   let gs;
