@@ -1,0 +1,39 @@
+name: "Worker fast replies rollout"
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: mkgik-worker-staging-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 6e738684ab060bf93d12372e2fbfe7da5d2466e6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install pinned dependencies
+        working-directory: worker
+        run: npm ci
+      - name: Verify syntax and persistent delivery behavior
+        working-directory: worker
+        run: |
+          npm run check
+          npm test
+      - name: Owner canary, real Telegram checks, then public fast replies
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          OWNER_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
+          FREE_PLAN_CONFIRMED: ${{ vars.FREE_PLAN_CONFIRMED }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/speed-up-worker.mjs
