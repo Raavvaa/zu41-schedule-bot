@@ -1,0 +1,40 @@
+name: "Deploy owner-only admin"
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: mkgik-worker-staging-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ebd0b4be5a3165a5e387a69d430feee80e3a69db
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install pinned dependencies
+        working-directory: worker
+        run: npm ci
+      - name: Verify owner isolation and regressions
+        working-directory: worker
+        run: |
+          npm run check
+          node --check src/admin.mjs
+          npm test
+      - name: Deploy private admin and verify owner Telegram delivery
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          OWNER_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
+          FREE_PLAN_CONFIRMED: ${{ vars.FREE_PLAN_CONFIRMED }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/deploy-owner-admin.mjs
