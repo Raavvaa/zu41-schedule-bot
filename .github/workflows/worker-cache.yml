@@ -1,0 +1,40 @@
+name: "Deploy shared week cache"
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: mkgik-worker-staging-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c2c9eda40be6097601ff167f7af467d8d7c760b0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install pinned dependencies
+        working-directory: worker
+        run: npm ci
+      - name: Verify cache, reminders, owner isolation and regressions
+        working-directory: worker
+        run: |
+          npm run check
+          node --check src/admin.mjs
+          npm test
+      - name: Deploy shared cache and verify source and owner Telegram delivery
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          OWNER_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
+          FREE_PLAN_CONFIRMED: ${{ vars.FREE_PLAN_CONFIRMED }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/deploy-shared-cache.mjs
