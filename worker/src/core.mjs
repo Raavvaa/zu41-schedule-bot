@@ -43,12 +43,13 @@ export function formatDay(s,u) {
   const labels={unpublished:'Дата ещё не опубликована',network_error:'Не удалось запросить сайт расписания',invalid:'Не удалось проверить структуру расписания',loading:'Расписание проверяется'};
   return `${heading}\n\n⚠️ ${labels[s.status]??'Нет надёжных данных'}. Это не означает выходной.\n${s.checked_at?'Последняя успешная проверка: '+new Date(s.checked_at+10800000).toISOString().replace('T',' ').slice(0,19)+' МСК.\n':''}${link}`;
  }
+ const cached=s.cached_stale?'\n🕒 Сохранённая копия. Последняя успешная проверка: '+new Date(s.checked_at+10800000).toISOString().replace('T',' ').slice(0,19)+' МСК. Обновление запрошено.':'';
  const ls=visible(s,u.subgroup);
- if(!ls.length)return `${heading}\n\n${s.explicitEmpty?'На сайте указано: занятий нет.':'Для выбранной подгруппы занятия не указаны.'}\n${link}`;
- return heading+'\n\n'+ls.map(lessonText).join('\n\n')+`\n\nВсего пар: ${ls.length} · ${ls[0].start}–${ls.at(-1).end}\n${link}`;
+ if(!ls.length)return `${heading}\n\n${s.explicitEmpty?'На сайте указано: занятий нет.':'Для выбранной подгруппы занятия не указаны.'}${cached}\n${link}`;
+ return heading+'\n\n'+ls.map(lessonText).join('\n\n')+`\n\nВсего пар: ${ls.length} · ${ls[0].start}–${ls.at(-1).end}${cached}\n${link}`;
 }
 export function nextLesson(s,u,now){
- if(s.status!=='confirmed')return formatDay(s,u);
+ if(s.status!=='confirmed'||s.cached_stale)return formatDay(s,u);
  const ls=visible(s,u.subgroup);const current=ls.find(l=>at(s.date,l.start)<=now&&now<at(s.date,l.end));
  const next=ls.find(l=>at(s.date,l.start)>now);
  return current?'Сейчас идёт:\n'+lessonText(current)+(next?'\n\nСледующая:\n'+lessonText(next):''):next?'Следующая пара:\n'+lessonText(next):'На сегодня следующих пар в проверенном расписании нет.\n'+ROOT+'/groups/'+u.group_id;

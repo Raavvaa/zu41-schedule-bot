@@ -16,7 +16,8 @@
     "DELIVERY_ENABLED": "false",
     "MAX_USERS": "50",
     "FAST_REPLY": "false",
-    "ADMIN_ENABLED": "false"
+    "ADMIN_ENABLED": "false",
+    "SHARED_CACHE": "false"
   },
   "d1_databases": [
     {
