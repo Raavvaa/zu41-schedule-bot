@@ -1,5 +1,5 @@
 import {MS,ROOT,dayKey,addDays,at,visible,formatDay,lessonText,pack,one,rows,run,sql,lock,unlock,telegram} from './core.mjs';
-import {getSchedule,refreshWeek,decode} from './source.mjs';
+import {getSchedule,refreshWeek,decode,refreshCandidates} from './source.mjs';
 import {processUpdate} from './dialog.mjs';
 export async function putJob(env,job,now){
  return run(env,`INSERT INTO jobs(job_key,user_id,chat_id,lane,date,group_id,lesson_number,kind,due_at,expires_at,start_at,revision,payload,created_at)
@@ -42,6 +42,11 @@ export async function refreshTick(env,lane,now){
  const owner=await lock(env,'refresh:'+lane,now,40000);if(!owner)return;
  try{
   const today=dayKey(now);
+  if(env.SHARED_CACHE==='true'){
+   const due=(await refreshCandidates(env,now,lane))[0];
+   if(due)await refreshWeek(env,{group_id:due.group_id,name:due.name},due.date,now);
+   return;
+  }
   // Fair bounded refresh; multiple students share one group/day source.
   const due=await one(env,`SELECT s.group_id,s.date,g.name FROM schedules s JOIN groups g ON g.group_id=s.group_id
    WHERE s.group_id%4=? AND s.date>=? AND s.date<=? AND s.next_refresh<=?
@@ -79,14 +84,14 @@ export async function deliverJob(env,j,now,clock=()=>now){
   const c=await one(env,'SELECT * FROM schedules WHERE group_id=? AND date=?',j.group_id,j.date);
   const s=c?decode(c):{date:j.date,status:'unpublished'};
   if(j.kind==='reminder'){
-   if(s.status!=='confirmed'||now-s.checked_at>3*MS){
+   if(s.status!=='confirmed'||now-s.checked_at>(env.SHARED_CACHE==='true'?MS:3*MS)){
     await run(env,'UPDATE schedules SET next_refresh=MIN(next_refresh,?) WHERE group_id=? AND date=?',now,j.group_id,j.date);
     return defer(env,j,now,MS,'source_not_fresh');
    }
    const l=visible(s,u.subgroup).find(l=>l.number===j.lesson_number);
    if(!l)return finish(env,j,'cancelled',now,'lesson_removed');
    const start=at(j.date,l.start),due=start-u.reminder_minutes*MS;
-   if(start!==j.start_at||due!==j.due_at&&j.last_error!=='rate_limit'&&j.last_error!=='source_not_fresh'&&j.last_error!=='rate_budget'){
+   if(start!==j.start_at||due!==j.due_at&&j.last_error!=='rate_limit'&&j.last_error!=='source_not_fresh'&&j.last_error!=='rate_budget'&&j.last_error!=='source_changed'){
     await run(env,'UPDATE users SET next_plan=? WHERE user_id=?',now,u.user_id);
     return finish(env,j,'cancelled',now,'lesson_moved');
    }

@@ -39,7 +39,7 @@ async function user(uid){return db.prepare('SELECT * FROM users WHERE user_id=?'
 async function tick(type,lane,clock){const r=await call('/test/tick',{type,lane,now:clock});maxQueries=Math.max(maxQueries,r.data.budget.queries);totalRead+=r.data.budget.read;totalWritten+=r.data.budget.written;assert.ok(r.data.budget.queries<=45,'D1 query budget leaves room under 50');return r;}
 async function clearJobs(){await db.prepare('DELETE FROM jobs').run();await db.prepare('DELETE FROM locks').run();await db.prepare("DELETE FROM meta WHERE name='telegram_pause'").run();await db.prepare('DELETE FROM rate_slots').run();sends=[];}
 async function insertUser(uid,group=63,clock=now){return db.prepare(`INSERT OR REPLACE INTO users(user_id,chat_id,group_id,group_name,subgroup,changed_at,next_plan,lane) VALUES(?,?,?,?,'both',?,?,?)`).bind(uid,uid,group,group===63?'ЗУ-41/23':'ЗУ-1/26',clock,clock,uid%8).run();}
-before(async()=>{dir=await mkdtemp(path.join(tmpdir(),'mkgik-d1-'));scriptPath=path.join(dir,'test-bundle.mjs');await build({entryPoints:['test/entry.mjs'],outfile:scriptPath,bundle:true,format:'esm',platform:'browser'});mf=create();db=await mf.getD1Database('DB');await db.exec((await readFile('migrations/0001.sql','utf8')).replace(/\n/g,' '));});
+before(async()=>{dir=await mkdtemp(path.join(tmpdir(),'mkgik-d1-'));scriptPath=path.join(dir,'test-bundle.mjs');await build({entryPoints:['test/entry.mjs'],outfile:scriptPath,bundle:true,format:'esm',platform:'browser'});mf=create();db=await mf.getD1Database('DB');for(const file of ['0001.sql','0002_shared_cache.sql'])await db.exec((await readFile('migrations/'+file,'utf8')).replace(/\n/g,' '));});
 after(async()=>{await mf.dispose();await rm(dir,{recursive:true,force:true});});
 test('parse REAL college catalogue and REAL dated schedules in workerd HTMLRewriter',async()=>{
  const g=(await call('/test/groups',groups)).data;assert.equal(g.length,33);assert.ok(g.some(x=>x.id===63&&x.name==='ЗУ-41/23'));
@@ -261,4 +261,64 @@ test('owner refresh uses saved group with a cooldown; ordinary menu has no admin
  assert.match(sends[0].text,/Проверка источника/);
  const sourceBefore=sourceCalls;await text(1001,'/admin refresh',now+2000);assert.equal(sourceCalls,sourceBefore);assert.match(sends.at(-1).text,/через минуту/);
  await clearJobs();await text(1001,'/start');assert.doesNotMatch(JSON.stringify(sends[0].reply_markup),/admin|Админ/);
+});
+
+
+test('group 63 warms without subscribers; others require FOUR unblocked subscriptions',async()=>{
+ await clearJobs();await db.prepare('DELETE FROM users').run();await db.prepare('DELETE FROM schedules').run();await db.prepare('DELETE FROM refresh_requests').run();await db.prepare("DELETE FROM meta WHERE name LIKE 'source:%'").run();
+ let cs=(await call('/test/cache-candidates?now='+now,{})).data;assert.deepEqual([...new Set(cs.map(x=>x.group_id))],[63]);
+ for(let i=0;i<3;i++)await insertUser(2000+i,49);
+ cs=(await call('/test/cache-candidates?now='+now,{})).data;assert.ok(!cs.some(x=>x.group_id===49));
+ await insertUser(2003,49);cs=(await call('/test/cache-candidates?now='+now,{})).data;assert.ok(cs.some(x=>x.group_id===49));
+ await db.prepare('UPDATE users SET blocked=1 WHERE user_id=2003').run();cs=(await call('/test/cache-candidates?now='+now,{})).data;assert.ok(!cs.some(x=>x.group_id===49));
+});
+test('expired week returns without source fetch; one durable refresh intent survives restart',async()=>{
+ await call('/test/source?group=63&date=2026-10-12&now='+now,{});const oldCalls=sourceCalls,clock=now+20*60000;
+ for(const date of ['2026-10-12','2026-10-13','2026-10-12']){
+  const s=(await call('/test/cache-source?group=63&date='+date+'&now='+clock,{})).data;
+  assert.equal(s.status,'confirmed');assert.equal(s.cached_stale,true);assert.ok(s.lessons.length);
+ }
+ assert.equal(sourceCalls,oldCalls);assert.equal((await db.prepare('SELECT count(*) AS n FROM refresh_requests').first()).n,1);
+ await mf.dispose();mf=create();db=await mf.getD1Database('DB');assert.equal((await db.prepare('SELECT count(*) AS n FROM refresh_requests').first()).n,1);
+ await call('/test/cache-refresh?lane=3&now='+clock,{});assert.equal(sourceCalls,oldCalls+1);assert.equal((await db.prepare('SELECT count(*) AS n FROM refresh_requests').first()).n,0);
+});
+test('cache miss downloads one week; second day reuses it',async()=>{
+ await db.prepare('DELETE FROM schedules WHERE group_id=49').run();await db.prepare("DELETE FROM meta WHERE name LIKE 'source:49:%'").run();const oldCalls=sourceCalls;
+ const s=(await call('/test/cache-source?group=49&date=2026-10-12&now='+now,{})).data;assert.equal(s.status,'confirmed');
+ await call('/test/cache-source?group=49&date=2026-10-13&now='+now,{});assert.equal(sourceCalls,oldCalls+1);assert.equal((await db.prepare('SELECT count(*) AS n FROM schedules WHERE group_id=49').first()).n,7);
+});
+test('stale Today answers from D1 with last checked date even if source is broken',async()=>{
+ await clearJobs();await insertUser(1001);sourceOverride='network';const oldCalls=sourceCalls;
+ await call('/test/cache-webhook?now='+(now+40*60000),{update_id:updateSeq++,message:{from:{id:1001},chat:{id:1001,type:'private'},text:'📅 Сегодня'}},{'X-Telegram-Bot-Api-Secret-Token':'test-secret'});
+ assert.equal(sourceCalls,oldCalls);assert.equal(sends.length,1);assert.match(sends[0].text,/Сохранённая копия/);assert.match(sends[0].text,/Романенко/);assert.match(sends[0].text,/Последняя успешная проверка/);sourceOverride=null;
+});
+test('due reminder rechecks once per group and uses changed room without a duplicate',async()=>{
+ await clearJobs();await db.prepare('DELETE FROM users').run();await insertUser(1001);await db.prepare("DELETE FROM meta WHERE name LIKE 'source:%'").run();await call('/test/source?group=63&date=2026-10-12&now='+now,{});await tick('plan',1,now);
+ const due=at('2026-10-12','08:50');sourceOverride=fixture.replace('>305<','>777<');const oldCalls=sourceCalls;
+ const refreshed=await call('/test/cache-refresh?lane=3&now='+due,{});assert.ok(refreshed.data.budget.queries<=45);assert.equal(sourceCalls,oldCalls+1);
+ await call('/test/cache-deliver?lane=1&now='+due,{});assert.equal(sends.length,1);assert.match(sends[0].text,/777/);assert.equal(sourceCalls,oldCalls+1);
+ await call('/test/cache-deliver?lane=1&now='+(due+1000),{});assert.equal(sends.length,1);sourceOverride=null;
+});
+test('failed recheck preserves records and defers unverified reminder',async()=>{
+ await clearJobs();await db.prepare("DELETE FROM meta WHERE name LIKE 'source:%'").run();await insertUser(1001);await call('/test/source?group=63&date=2026-10-12&now='+now,{});await tick('plan',1,now);
+ sourceOverride='network';const due=at('2026-10-12','08:50');await call('/test/cache-refresh?lane=3&now='+due,{});await call('/test/cache-deliver?lane=1&now='+due,{});assert.equal(sends.length,0);
+ const j=await db.prepare("SELECT state,last_error FROM jobs WHERE user_id=1001 AND date='2026-10-12' AND lesson_number=1").first();assert.equal(j.state,'retry');assert.equal(j.last_error,'source_not_fresh');
+ const s=await db.prepare("SELECT status,data FROM schedules WHERE group_id=63 AND date='2026-10-12'").first();assert.equal(s.status,'network_error');assert.ok(JSON.parse(s.data).lessons.length);sourceOverride=null;
+});
+test('Sunday and year boundary prewarm correct next week',async()=>{
+ await clearJobs();await db.prepare('DELETE FROM schedules').run();await db.prepare('DELETE FROM refresh_requests').run();await db.prepare("DELETE FROM meta WHERE name LIKE 'source:%'").run();
+ let cs=(await call('/test/cache-candidates?now='+at('2026-10-18','20:00'),{})).data;assert.ok(cs.some(x=>x.group_id===63&&x.date==='2026-10-18'));assert.ok(cs.some(x=>x.group_id===63&&x.date==='2026-10-19'));
+ cs=(await call('/test/cache-candidates?now='+at('2027-01-03','20:00'),{})).data;assert.ok(cs.some(x=>x.date==='2027-01-04'));assert.ok(cs.some(x=>x.date==='2027-01-03'));
+});
+
+test('confirmed earlier move rebuilds existing jobs immediately; explicit cancellation prevents reminder',async()=>{
+ await clearJobs();await insertUser(1001);await db.prepare("DELETE FROM meta WHERE name LIKE 'source:%'").run();await call('/test/source?group=63&date=2026-10-12&now='+now,{});await tick('plan',1,now);
+ const check=at('2026-10-12','08:45');sourceOverride=fixture.replace('>09:00-10:30<','>08:54-10:30<');
+ await call('/test/cache-refresh?lane=3&now='+check,{});
+ let j=await db.prepare("SELECT due_at,start_at,state FROM jobs WHERE user_id=1001 AND date='2026-10-12' AND lesson_number=1").first();
+ assert.equal(j.start_at,at('2026-10-12','08:54'));assert.equal(j.due_at,check);assert.equal(j.state,'pending');
+ await call('/test/cache-deliver?lane=1&now='+check,{});assert.equal(sends.length,1);assert.match(sends[0].text,/Через 9 мин/);
+ await clearJobs();sourceOverride=null;await db.prepare("DELETE FROM meta WHERE name LIKE 'source:%'").run();await call('/test/source?group=63&date=2026-10-12&now='+now,{});await tick('plan',1,now);
+ sourceOverride=fixture.replace('МДК 02.03 Экономическая оценка объектов недвижимости','Занятие отменено');await call('/test/cache-refresh?lane=3&now='+at('2026-10-12','08:50'),{});await call('/test/cache-deliver?lane=1&now='+at('2026-10-12','08:50'),{});
+ assert.equal(sends.length,0);j=await db.prepare("SELECT state FROM jobs WHERE user_id=1001 AND date='2026-10-12' AND lesson_number=1").first();assert.equal(j.state,'cancelled');sourceOverride=null;
 });

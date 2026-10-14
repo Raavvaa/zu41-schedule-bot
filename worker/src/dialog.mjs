@@ -85,11 +85,11 @@ async function dialog(env,u,now,ctx){
   const target=action==='view'?{...draft,subgroup:'both'}:saved;
   if(!target)return groupList();
   const today=dayKey(now),date=u.text==='📆 Завтра'?addDays(today,1):today;
-  const s=await getSchedule(env,target.group_id,date,now);
+  const s=await getSchedule(env,target.group_id,date,now,{preferCache:true});
   if(u.text==='⏭ Сейчас / следующая пара')return send(nextLesson(s,target,now),menu);
   if(u.text==='🗓 Неделя'){
-   const start=monday(today);const all=await rows(env,'SELECT data,status,date,checked_at FROM schedules WHERE group_id=? AND date>=? AND date<=?',target.group_id,start,addDays(start,6));
-   const text=Array.from({length:7},(_,i)=>{const d=addDays(start,i);const x=all.find(r=>r.date===d);return formatDay(x?{...JSON.parse(x.data??'{}'),status:x.status,date:d,checked_at:x.checked_at}:{date:d,status:'unpublished'},target);}).join('\n\n────────\n\n');
+   const start=monday(today);const all=await rows(env,'SELECT data,status,date,checked_at,next_refresh,error FROM schedules WHERE group_id=? AND date>=? AND date<=?',target.group_id,start,addDays(start,6));
+   const text=Array.from({length:7},(_,i)=>{const d=addDays(start,i);const x=all.find(r=>r.date===d);return formatDay(x?{...JSON.parse(x.data??'{}'),status:x.status,date:d,checked_at:x.checked_at,cached_stale:now>=x.next_refresh}:{date:d,status:'unpublished'},target);}).join('\n\n────────\n\n');
    return send(text,menu);
   }
   return send(formatDay(s,target),action==='view'?keyboard(u.user_id,session.nonce,[[['Подписаться на эту группу','subscribe_preview']],[['Назад','back']]]):menu);

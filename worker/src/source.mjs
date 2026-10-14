@@ -78,18 +78,21 @@ export async function catalog(env,now,force=false){
   return gs;
  } finally{await unlock(env,'catalog',owner);}
 }
-export async function getSchedule(env,groupId,date,now,{force=false}={}){
+export async function getSchedule(env,groupId,date,now,{force=false,preferCache=false}={}){
+ let c=await one(env,'SELECT * FROM schedules WHERE group_id=? AND date=?',groupId,date);
+ if(!force&&c&&(now<c.next_refresh||preferCache&&env.SHARED_CACHE==='true')){
+  if(preferCache&&env.SHARED_CACHE==='true'&&now>=c.next_refresh)await requestRefresh(env,groupId,date,now);
+  return {...decode(c,now),cache_hit:true};
+ }
  const group=await one(env,'SELECT group_id,name FROM groups WHERE group_id=?',groupId);
  if(!group)return {date,status:'invalid',lessons:[]};
- let c=await one(env,'SELECT * FROM schedules WHERE group_id=? AND date=?',groupId,date);
- if(!force&&c&&now<c.next_refresh)return decode(c);
  await refreshWeek(env,group,date,now);
  c=await one(env,'SELECT * FROM schedules WHERE group_id=? AND date=?',groupId,date);
- return c?decode(c):{date,status:'loading',lessons:[]};
+ return c?decode(c,now):{date,status:'loading',lessons:[]};
 }
-export function decode(c){
+export function decode(c,now=0){
  const old=c.data?JSON.parse(c.data):{};
- return {...old,date:c.date,status:c.status,checked_at:c.checked_at,error:c.error};
+ return {...old,date:c.date,status:c.status,checked_at:c.checked_at,error:c.error,cached_stale:now>=c.next_refresh};
 }
 export async function refreshWeek(env,group,date,now){
  const start=monday(date);const name='source:'+group.group_id+':'+start;
@@ -115,10 +118,60 @@ export async function refreshWeek(env,group,date,now){
     attempt_at=excluded.attempt_at,error=excluded.error,next_refresh=excluded.next_refresh`,group.group_id,d,status,found?JSON.stringify(found):null,hash,found?now:0,now,error??null,now+(error?300000:900000)));
   }
   await env.DB.batch(statements);
-  if(changed)await env.DB.batch([
-   sql(env,"UPDATE jobs SET state='cancelled',last_error='source_changed' WHERE group_id=? AND kind='reminder' AND state IN ('pending','retry') AND due_at>?",group.group_id,now),
-   sql(env,'UPDATE users SET next_plan=? WHERE group_id=? AND blocked=0',now,group.group_id)
-  ]);
+  if(changed){
+   if(env.SHARED_CACHE==='true'){
+    // Reschedule EXISTING jobs in one batch, without waiting for each student's
+    // planning lane. A room-only change must not cancel otherwise valid reminders.
+    // Only confirmed dates participate: a missing date/network error is no cancellation.
+    const confirmed=JSON.stringify(data);
+    await run(env,`WITH revised AS (
+     SELECT j.job_key,
+      unixepoch(j.date||'T'||json_extract(l.value,'$.start')||':00+03:00')*1000 AS start,
+      unixepoch(j.date||'T'||json_extract(l.value,'$.start')||':00+03:00')*1000-u.reminder_minutes*60000 AS due
+     FROM jobs j JOIN users u ON u.user_id=j.user_id
+     JOIN json_each(?) d ON json_extract(d.value,'$.date')=j.date
+     JOIN json_each(d.value,'$.lessons') l ON json_extract(l.value,'$.number')=j.lesson_number
+     WHERE j.group_id=? AND j.kind='reminder' AND j.state IN ('pending','retry')
+      AND u.revision=j.revision AND u.group_id=j.group_id
+      AND EXISTS(SELECT 1 FROM json_each(l.value,'$.variants') v WHERE u.subgroup='both' OR json_extract(v.value,'$.subgroup') IN ('',u.subgroup))
+    ) UPDATE jobs SET
+     state=CASE WHEN EXISTS(SELECT 1 FROM revised r WHERE r.job_key=jobs.job_key AND r.start>? AND r.due>=(SELECT changed_at FROM users WHERE user_id=jobs.user_id)) THEN 'pending' ELSE 'cancelled' END,
+     start_at=COALESCE((SELECT start FROM revised WHERE job_key=jobs.job_key),start_at),
+     due_at=MAX(?,COALESCE((SELECT due FROM revised WHERE job_key=jobs.job_key),due_at)),
+     last_error='source_changed'
+     WHERE group_id=? AND kind='reminder' AND state IN ('pending','retry')
+      AND date IN (SELECT json_extract(value,'$.date') FROM json_each(?))`,confirmed,group.group_id,now,now,group.group_id,confirmed);
+   }else await run(env,"UPDATE jobs SET state='cancelled',last_error='source_changed' WHERE group_id=? AND kind='reminder' AND state IN ('pending','retry') AND date>=? AND date<=? AND due_at>?",group.group_id,start,addDays(start,6),now);
+   await run(env,'UPDATE users SET next_plan=? WHERE group_id=? AND blocked=0',now,group.group_id);
+  }
+  if(env.SHARED_CACHE==='true'&&!error)await run(env,'DELETE FROM refresh_requests WHERE group_id=? AND week=? AND requested_at<=?',group.group_id,start,now);
   return !error;
  }finally{await unlock(env,name,owner);}
+}
+
+// Durable refresh intents survive an interrupted webhook. Only trusted catalogue IDs
+// enter here; the fetched URL is always constructed from ROOT and that ID.
+export async function requestRefresh(env,groupId,date,now){
+ return run(env,`INSERT INTO refresh_requests(group_id,week,date,requested_at) VALUES(?,?,?,?)
+  ON CONFLICT(group_id,week) DO NOTHING`,groupId,monday(date),date,now);
+}
+export async function refreshCandidates(env,now,lane=null){
+ const today=dayKey(now),tomorrow=addDays(today,1);
+ return rows(env,`WITH warm AS (
+  SELECT g.group_id,g.name FROM groups g WHERE g.group_id=63 OR
+   (SELECT count(*) FROM users u WHERE u.group_id=g.group_id AND u.blocked=0)>3
+ ), targets AS (
+  SELECT group_id,name,? AS date,2 AS priority FROM warm
+  UNION ALL SELECT group_id,name,?,2 FROM warm
+  UNION ALL SELECT r.group_id,g.name,r.date,1 FROM refresh_requests r JOIN groups g USING(group_id)
+  UNION ALL SELECT j.group_id,g.name,j.date,0 FROM jobs j JOIN groups g USING(group_id)
+   WHERE j.kind IN ('reminder','morning') AND j.state IN ('pending','retry') AND j.due_at>=? AND j.due_at<=?
+ ) SELECT t.group_id,t.name,t.date,MIN(t.priority) AS priority FROM targets t
+ LEFT JOIN schedules s ON s.group_id=t.group_id AND s.date=t.date
+ LEFT JOIN meta m ON m.name='source:'||t.group_id||':'||date(t.date,'weekday 0','-6 days')
+ WHERE (? IS NULL OR t.group_id%4=?) AND (m.value IS NULL OR CAST(m.value AS INTEGER)<=?)
+ AND (s.date IS NULL OR s.next_refresh<=? OR t.priority=0 AND s.attempt_at<=?
+  OR t.priority=1 AND EXISTS(SELECT 1 FROM refresh_requests r WHERE r.group_id=t.group_id AND r.week=date(t.date,'weekday 0','-6 days') AND r.requested_at>s.attempt_at))
+ GROUP BY t.group_id,date(t.date,'weekday 0','-6 days')
+ ORDER BY priority,COALESCE(s.next_refresh,0),t.group_id LIMIT 4`,today,tomorrow,now-120000,now+60000,lane,lane,now-60000,now,now-60000);
 }

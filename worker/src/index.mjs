@@ -38,7 +38,7 @@ export default {
  async fetch(request,env,ctx){
   try{
    const url=new URL(request.url);
-   if(url.pathname==='/health'&&request.method==='GET')return json({ok:true,version:'2.2.0',owner_admin:env.ADMIN_ENABLED==='true',source_sha:env.SOURCE_SHA??null,fast_reply:env.FAST_REPLY??'false',mode:env.DELIVERY_ENABLED==='true'?'active':'staging'});
+   if(url.pathname==='/health'&&request.method==='GET')return json({ok:true,version:'2.3.0',shared_cache:env.SHARED_CACHE==='true',owner_admin:env.ADMIN_ENABLED==='true',source_sha:env.SOURCE_SHA??null,fast_reply:env.FAST_REPLY??'false',mode:env.DELIVERY_ENABLED==='true'?'active':'staging'});
    if(url.pathname==='/telegram'&&request.method==='POST')return await webhook(request,env,Date.now(),ctx);
    if(!url.pathname.startsWith('/ops/')||!await safeEqual(request.headers.get('Authorization'),`Bearer ${env.ADMIN_SECRET}`))return json({ok:false},404);
    if(!env.ADMIN_SECRET)return json({ok:false},403);
@@ -47,6 +47,14 @@ export default {
     if(!example)return json({ok:false,error:'example_not_found'},502);
     const s=await getSchedule(env,example.id,dayKey(now),now,{force:true});
     return json({ok:s.status==='confirmed',source_status:s.status,catalog_count:gs.length,group:example.name,date:s.date,lessons:s.lessons?.length??0,checked_at:s.checked_at},s.status==='confirmed'?200:502);
+   }
+   if(url.pathname==='/ops/cache-check'&&request.method==='POST'){
+    const now=Date.now(),today=dayKey(now);const samples=[];
+    for(let i=0;i<3;i++){
+     const started=Date.now();const s=await getSchedule(env,63,today,now,{preferCache:true});
+     samples.push({ms:Date.now()-started,status:s.status,cache_hit:s.cache_hit===true,stale:s.cached_stale===true});
+    }
+    return json({ok:samples.every(x=>x.cache_hit),samples});
    }
    if(url.pathname==='/ops/status'){
     const counts=await rows(env,'SELECT state,count(*) AS count FROM jobs GROUP BY state');
