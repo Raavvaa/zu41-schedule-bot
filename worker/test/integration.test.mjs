@@ -11,7 +11,7 @@ const fixture=await readFile(new URL('./fixtures/zu41.html',import.meta.url),'ut
 const other=await readFile(new URL('./fixtures/zu1.html',import.meta.url),'utf8');
 const groups=await readFile(new URL('./fixtures/groups.html',import.meta.url),'utf8');
 let scriptPath;
-function create(){return new Miniflare({modules:true,scriptPath,modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],d1Persist:dir,bindings:{TELEGRAM_BOT_TOKEN:'test-token',WEBHOOK_SECRET:'test-secret',DELIVERY_ENABLED:'true',OWNER_CHAT_ID:'1001',MAX_USERS:'50'},outboundService:async req=>{
+function create(){return new Miniflare({modules:true,scriptPath,modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],d1Persist:dir,bindings:{TELEGRAM_BOT_TOKEN:'test-token',WEBHOOK_SECRET:'test-secret',DELIVERY_ENABLED:'true',OWNER_CHAT_ID:'1001',ADMIN_ENABLED:'true',MAX_USERS:'50'},outboundService:async req=>{
  const url=new URL(req.url);
  if(url.hostname==='api.telegram.org'){
   const body=await req.json();if(url.pathname.endsWith('/answerCallbackQuery'))return Response.json({ok:true,result:true});
@@ -226,4 +226,39 @@ test('cached full week uses the fast path within D1 query allowance',async()=>{
  const result=await call('/test/fast-webhook',{update_id:updateSeq++,message:{from:{id:10001},chat:{id:10001,type:'private'},text:'🗓 Неделя'}},{'X-Telegram-Bot-Api-Secret-Token':'test-secret'});
  assert.ok(result.data.budget.queries<=45,JSON.stringify(result.data.budget));
  assert.ok(sends.length>=1);console.log('Full-week fast webhook D1 budget:',JSON.stringify(result.data.budget));
+});
+
+test('owner-only /admin never adds buttons or changes subscription/dialog state',async()=>{
+ await clearJobs();await insertUser(1001);const before=JSON.stringify(await user(1001));
+ const dialogBefore=await db.prepare('SELECT * FROM dialogs WHERE user_id=1001').first();
+ await text(1001,'/admin');assert.equal(sends.length,1);
+ assert.match(sends[0].text,/Админ-панель/);assert.equal(sends[0].reply_markup,undefined);
+ assert.equal(JSON.stringify(await user(1001)),before);
+ assert.deepEqual(await db.prepare('SELECT * FROM dialogs WHERE user_id=1001').first(),dialogBefore);
+ for(const command of ['status','stats','groups','queue','errors','source']){
+  await clearJobs();await text(1001,'/admin '+command);assert.equal(sends.length,1);
+  assert.match(sends[0].text,/🔐/);assert.doesNotMatch(sends[0].text,/test-token|test-secret/);
+  assert.equal(sends[0].reply_markup,undefined);
+ }
+});
+test('another private user cannot access any admin operation, even with owner ID argument',async()=>{
+ for(const command of ['/admin','/admin stats','/admin refresh','/admin 1001','/admin@net_5b0_bot status']){
+  await clearJobs();const sourceBefore=sourceCalls;await text(1002,command);
+  assert.equal(sends.length,1);assert.equal(sends[0].chat_id,1002);
+  assert.equal(sends[0].text,'⛔ Доступ запрещён.');assert.equal(sourceCalls,sourceBefore);
+ }
+});
+test('spoofed owner identity and group chat cannot create admin response',async()=>{
+ await clearJobs();
+ for(const body of [
+  {message:{from:{id:1002},chat:{id:1001,type:'private'},text:'/admin'}},
+  {message:{from:{id:1001},chat:{id:1001,type:'group'},text:'/admin'}}
+ ])await call('/test/webhook?now='+now,{update_id:updateSeq++,...body},{'X-Telegram-Bot-Api-Secret-Token':'test-secret'});
+ assert.equal(sends.length,0);assert.equal((await db.prepare('SELECT count(*) AS n FROM jobs').first()).n,0);
+});
+test('owner refresh uses saved group with a cooldown; ordinary menu has no admin buttons',async()=>{
+ await clearJobs();await insertUser(1001);await text(1001,'/admin refresh');
+ assert.match(sends[0].text,/Проверка источника/);
+ const sourceBefore=sourceCalls;await text(1001,'/admin refresh',now+2000);assert.equal(sourceCalls,sourceBefore);assert.match(sends.at(-1).text,/через минуту/);
+ await clearJobs();await text(1001,'/start');assert.doesNotMatch(JSON.stringify(sends[0].reply_markup),/admin|Админ/);
 });
