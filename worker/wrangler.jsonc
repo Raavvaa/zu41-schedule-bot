@@ -15,7 +15,8 @@
   "vars": {
     "DELIVERY_ENABLED": "false",
     "MAX_USERS": "50",
-    "FAST_REPLY": "false"
+    "FAST_REPLY": "false",
+    "ADMIN_ENABLED": "false"
   },
   "d1_databases": [
     {

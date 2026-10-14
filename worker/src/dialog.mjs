@@ -1,3 +1,4 @@
+import {isAdminCommand,adminResponse} from './admin.mjs';
 import {catalog,getSchedule} from './source.mjs';
 import {MS,ROOT,dayKey,at,addDays,monday,pack,formatDay,nextLesson,one,rows,run,sql,validTime,lock,unlock,telegram} from './core.mjs';
 const menu={keyboard:[['📅 Сегодня','📆 Завтра'],['⏭ Сейчас / следующая пара','🗓 Неделя'],['🎓 Моя группа','⚙️ Настройки']],resize_keyboard:true};
@@ -35,6 +36,7 @@ export async function processUpdate(env,update,now=Date.now(),ctx=null){
  }finally{await unlock(env,'user:'+update.user_id,owner);}
 }
 async function dialog(env,u,now,ctx){
+ if(isAdminCommand(u.text))return reply(env,u,await adminResponse(env,u,now),now,u.update_id);
  const answer=async data=>{const p=telegram(env,'answerCallbackQuery',data);if(ctx)ctx.waitUntil(p);else await p;};
  let saved=await one(env,'SELECT * FROM users WHERE user_id=?',u.user_id);
  let session=await one(env,'SELECT * FROM dialogs WHERE user_id=?',u.user_id);

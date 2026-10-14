@@ -38,7 +38,7 @@ export default {
  async fetch(request,env,ctx){
   try{
    const url=new URL(request.url);
-   if(url.pathname==='/health'&&request.method==='GET')return json({ok:true,version:'2.1.0',source_sha:env.SOURCE_SHA??null,fast_reply:env.FAST_REPLY??'false',mode:env.DELIVERY_ENABLED==='true'?'active':'staging'});
+   if(url.pathname==='/health'&&request.method==='GET')return json({ok:true,version:'2.2.0',owner_admin:env.ADMIN_ENABLED==='true',source_sha:env.SOURCE_SHA??null,fast_reply:env.FAST_REPLY??'false',mode:env.DELIVERY_ENABLED==='true'?'active':'staging'});
    if(url.pathname==='/telegram'&&request.method==='POST')return await webhook(request,env,Date.now(),ctx);
    if(!url.pathname.startsWith('/ops/')||!await safeEqual(request.headers.get('Authorization'),`Bearer ${env.ADMIN_SECRET}`))return json({ok:false},404);
    if(!env.ADMIN_SECRET)return json({ok:false},403);
