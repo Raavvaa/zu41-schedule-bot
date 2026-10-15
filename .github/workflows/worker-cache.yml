@@ -1,4 +1,4 @@
-name: "Deploy private Brat accountant"
+name: "Verify private Brat accountant"
 on:
   workflow_dispatch:
 permissions:
@@ -13,19 +13,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: cd42c20a3ff7445796e8192288ec20aa5e77445b
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-      - name: Install pinned accountant dependencies
-        working-directory: accountant
-        run: npm ci
-      - name: Verify private access, ledger and delivery recovery
-        working-directory: accountant
-        run: |
-          npm run check
-          npm test
-      - name: Deploy isolated accountant and verify Groq and Telegram
+          ref: deploy/brat-accountant
+      - name: Verify private Telegram and Cron
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -34,4 +23,4 @@ jobs:
           OWNER_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
           FREE_PLAN_CONFIRMED: ${{ vars.FREE_PLAN_CONFIRMED }}
-        run: node accountant/deploy.mjs
+        run: node accountant/verify.mjs
