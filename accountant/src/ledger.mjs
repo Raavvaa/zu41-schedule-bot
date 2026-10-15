@@ -24,7 +24,7 @@ export function changes(actions,ws){
  const add=(w,c,n)=>{const k=w+':'+c;ds.set(k,(ds.get(k)??0)+n);};
  for(const a of actions){
   if(a.type==='opening'){
-   if(actions.length!==1)throw Error('opening_alone');
+   if(actions.some(x=>x.type!=='opening')||new Set(actions.map(x=>x.wallet+':'+x.currency)).size!==actions.length)throw Error('opening_alone');
    add(a.wallet,a.currency,a.amount-(ws.find(w=>w.wallet===a.wallet&&w.currency===a.currency)?.amount??0));
   }else if(a.type==='income')add(a.wallet,a.currency,a.amount);
   else{add(a.wallet,a.currency,-a.amount);if(a.type==='transfer')add(a.to,a.currency,a.amount);}
