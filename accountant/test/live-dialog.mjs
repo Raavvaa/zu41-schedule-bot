@@ -10,7 +10,7 @@ await build({entryPoints:['accountant/test/entry.mjs'],outfile:path.join(dir,'bu
 const mf=new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],bindings:{OWNER_CHAT_ID:'1001',WEBHOOK_SECRET:'test-only',TELEGRAM_BOT_TOKEN:'fake',GROQ_API_KEY:process.env.GROQ_API_KEY,ENABLED:'true'},outboundService:async req=>{
  const u=new URL(req.url);
  if(u.hostname==='api.telegram.org'){const b=await req.json();if(u.pathname.endsWith('sendMessage'))sent.push(b);return Response.json({ok:true,result:{message_id:sent.length}});}
- if(u.hostname==='api.groq.com'){calls++;try{return await fetch(req.url,{method:'POST',headers:req.headers,body:await req.text(),signal:AbortSignal.timeout(22000)});}catch{return Response.json({error:'unavailable'},{status:503});}}
+ if(u.hostname==='api.groq.com'){calls++;try{const r=await fetch(req.url,{method:'POST',headers:req.headers,body:await req.text(),signal:AbortSignal.timeout(22000)});const d=await r.clone().json();let m;try{m=JSON.parse(d.choices?.[0]?.message?.content??'null');}catch{}console.log('MODEL_TEST_METADATA '+JSON.stringify({http:r.status,kind:m?.kind,actions:m?.actions?.length,error:d.error?.code??null}));return r;}catch{return Response.json({error:'unavailable'},{status:503});}}
  throw Error('unexpected outbound');
 }});
 const db=await mf.getD1Database('DB');
@@ -25,7 +25,7 @@ try{
  await check('unknown balance is unknown',async()=>{const r=await chat('сколько у меня щас денег?');assert.match(r.text,/не подтверждён/);assert.equal(calls,0);});
  await check('real model proposes explicit opening, only confirm changes journal',async()=>{
  const r=await chat('У меня сейчас уже есть ровно 12000 рублей наличными в Сабунчи. Это весь текущий остаток капитала, не доход. Запиши начальный остаток.');
- const d=await db.prepare('SELECT * FROM drafts WHERE id=?').bind(String(r.id)).first();assert.ok(d,'no opening proposal');const p=JSON.parse(d.payload);assert.equal(p.actions[0].type,'opening');assert.equal(p.actions[0].amount,1200000);assert.equal(await count(),0);
+ const d=await db.prepare('SELECT * FROM drafts WHERE id=?').bind(String(r.id)).first();assert.ok(d,'no opening proposal; fixture reply: '+r.text);const p=JSON.parse(d.payload);assert.equal(p.actions[0].type,'opening');assert.equal(p.actions[0].amount,1200000);assert.equal(await count(),0);
  const status=await chat('добавил?');assert.match(status.text,/ещё не подтверждена/);await chat('', 'yes:'+r.id);assert.equal(await count(),1);
  const balance=await chat('сколько щас денег?');assert.match(balance.text,/12\s?000/);
  });
