@@ -1,0 +1,1 @@
+{"name":"brat-accountant","version":"1.0.0","private":true,"type":"module","scripts":{"test":"node --test --test-concurrency=1 test/*.test.mjs","check":"node --check src/index.mjs && node --check src/ledger.mjs && node --check src/brain.mjs"},"devDependencies":{"miniflare":"4.20260730.0","wrangler":"4.149.0"}}
