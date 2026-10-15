@@ -1,4 +1,4 @@
-name: "Verify private Brat accountant"
+name: "Accountant dialogue safety and deploy"
 on:
   workflow_dispatch:
 permissions:
@@ -7,20 +7,30 @@ concurrency:
   group: brat-accountant-deploy
   cancel-in-progress: false
 jobs:
-  deploy:
+  verify-and-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: deploy/brat-accountant
-      - name: Verify private Telegram and Cron
+          ref: 0462f4dfbc864182f989ae733f4891c6257db32e
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --prefix accountant
+      - run: npm test --prefix accountant
+      - name: Isolated dialogue with real Groq and fake Telegram
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: node accountant/test/live-dialog.mjs
+      - name: Deploy only after dialogue gate passes
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.SABUNCHI_BOT_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OWNER_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OWNER_CONTEXT: ${{ secrets.SABUNCHI_OWNER_CONTEXT }}
           ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
           FREE_PLAN_CONFIRMED: ${{ vars.FREE_PLAN_CONFIRMED }}
-        run: node accountant/verify.mjs
+        run: node accountant/deploy.mjs
