@@ -1,5 +1,5 @@
 import {q,one,all,run,amount,money,validate,propose,apply,balances,balanceText,draftText,walletName} from './ledger.mjs';
-import {brain} from './brain.mjs';
+import {brain,unsafeReply} from './brain.mjs';
 const json=(v,status=200)=>Response.json(v,{status});
 const day=now=>new Date(now+10800000).toISOString().slice(0,10);
 const menu={keyboard:[['💰 Баланс','✍️ Записать'],['🎯 Цель','📒 История'],['⚙️ Настройки','💬 Поговорим']],resize_keyboard:true};
@@ -23,6 +23,22 @@ function localAction(t){
  return [{type,wallet,currency:m[3].toUpperCase(),amount:m[4],...(type==='transfer'?{to:wallet==='pocket'?'capital':'pocket'}:{}),note:m[5]??''}];
 }
 const help='Брат, можно писать как говоришь: «получил 4500 руб, трёшку в дом, остальное себе». Я покажу запись и спрошу подтверждение.\n\nЕсли Groq недоступен:\n/доход карманные RUB 3500 смена\n/расход карманные RUB 250 еда\n/перевод карманные RUB 3000\n/остаток капитал RUB 100000\n/цель 500000\n/план 25000\n/отмена — отменить последнюю запись с подтверждением\n/память текст — сохранить важное о себе\n/забыть — очистить контекст разговоров\n\nВсе суммы выше — примеры. Ничего не зачислено. RUB и AZN учитываются отдельно; курсы не выдумываю.\nСвободный текст и короткая история передаются Groq для понимания. ID и токены туда не отправляю.';
+export function financialIntent(text){
+ const t=text.toLowerCase().replace(/ё/g,'е');
+ if(/(?:добавил|записал|зачислил|сохранил|списал|подтвердил|получилось|почему.*подтверж|че тут так пишет)/u.test(t))return 'status';
+ if(/(?:баланс|сколько.{0,35}(?:денег|денеж|бабок|бабла|остал|накоп|карман|сабунчи|капитал)|(?:денег|денеж|бабок).{0,20}сколько|(?:что|че).{0,20}(?:по деньгам|в кошельк)|скок.{0,20}(?:денег|бабла))/u.test(t))return 'balance';
+ return null;
+}
+async function recordStatus(env,now){
+ const d=await one(env,"SELECT id,state,expires_at FROM drafts ORDER BY created_at DESC,rowid DESC LIMIT 1");
+ let status='Подтверждённых записей пока нет. Слова в переписке сами по себе деньги в журнал не добавляют.';
+ if(d?.state==='ready'&&d.expires_at>now)status='Запись ещё не подтверждена. Нажми «✅ Записать» под предложением; до этого баланс не меняется.';
+ else if(d?.state==='applied')status='Последнее предложение подтверждено и записано в журнал.';
+ else if(d?.state==='cancelled')status='Последнее предложение отменено. Оно не меняло баланс.';
+ else if(d)status='Предложение устарело. Его нельзя подтвердить; предложи запись заново.';
+ else if(await one(env,'SELECT id FROM transactions LIMIT 1'))status='В журнале есть подтверждённые записи. Текущие остатки — ниже.';
+ return status+'\n\n'+await balanceText(env);
+}
 async function handle(env,b,now){
  const id=String(b.update_id),text=(b.message?.text??'').trim(),cb=b.callback_query?.data;
  await run(env,'UPDATE settings SET last_seen=?,active=1 WHERE id=1',now);
@@ -41,7 +57,8 @@ async function handle(env,b,now){
   return reply(env,id,'Кнопка устарела. Открой /start.',now);
  }
  if(text==='/start'||text==='/help')return reply(env,id,'С Бисмиллях, брат. Я твой личный бухгалтер: капитал Сабунчи отдельно, карманные отдельно.\n\n'+await balanceText(env)+'\n\n'+help,now);
- if(text==='💰 Баланс'||text==='/balance')return reply(env,id,await balanceText(env),now);
+ if(financialIntent(text)==='status')return reply(env,id,await recordStatus(env,now),now);
+ if(text==='💰 Баланс'||text==='/balance'||financialIntent(text)==='balance')return reply(env,id,await balanceText(env),now);
  if(text==='✍️ Записать')return reply(env,id,'Напиши, что уже получил или потратил, сумму и кошелёк. Если только хочешь купить — скажи «хочу», я ничего не спишу.\n\n'+help,now);
  if(text==='🎯 Цель')return reply(env,id,await balanceText(env)+'\n\nЧтобы задать личную цель в рублях: /цель 500000\nПлан накоплений на месяц: /план 25000\nСрок и бюджет сделки обсудим отдельно, без выдуманного курса.',now);
  const goal=text.match(/^\/(цель|план)\s+(\d+(?:[.,]\d{1,2})?)$/);
@@ -71,6 +88,12 @@ async function handle(env,b,now){
  try{result=await brain(env,text==='💬 Поговорим'?'Хочу поговорить. Спроси, как у меня дела.':text,now);}catch{return reply(env,id,'Брат, Groq сейчас недоступен или закончился дневной лимит. Деньги не потерялись: «Баланс», история и команды записи работают.\n\n'+help,now);}
  await memory(env,id+':user','user',text,now);
  if(result.kind==='proposal')return draft(env,id,result.actions,now);
+ if(result.kind==='balance')return reply(env,id,await balanceText(env),now);
+ if(result.kind==='status')return reply(env,id,await recordStatus(env,now),now);
+ if(result.kind==='history')return handle(env,{update_id:b.update_id,message:{text:'/history'}},now);
+ // Never echo model-generated monetary facts or success claims into the chat/memory.
+ if(result.kind==='wish'&&unsafeReply(result.reply))return reply(env,id,'Брат, это желание, поэтому ничего не списываю. Планируешь взять из карманных или из капитала Сабунчи? Капитал бережём; покупку можно спокойно обдумать.',now);
+ if(unsafeReply(result.reply))return reply(env,id,'Брат, уточни: это уже имеющийся остаток, новый доход, расход или пока только план? Для записи нужны сумма, валюта и кошелёк. Пока ничего не изменено.\n\n'+await balanceText(env),now);
  await memory(env,id+':assistant','assistant',result.reply,now+1);
  return reply(env,id,result.reply,now);
 }
@@ -120,7 +143,7 @@ export default {
  async fetch(req,env,ctx){
   try{
    const u=new URL(req.url);
-   if(u.pathname==='/health')return json({ok:true,version:'1.0.0',sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
+   if(u.pathname==='/health')return json({ok:true,version:'1.1.0',sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
    if(u.pathname==='/telegram'&&req.method==='POST'){
     if(env.ENABLED!=='true'||!await equal(req.headers.get('X-Telegram-Bot-Api-Secret-Token'),env.WEBHOOK_SECRET))return json({ok:false},403);
     if(Number(req.headers.get('content-length'))>16384)return json({ok:false},413);

@@ -54,3 +54,18 @@ test('two opening balances can be confirmed together without mixing currencies',
 
 
 test('explicit zero opening accepts model decimal format',async()=>{assert.equal(validate([action('opening','pocket','0.00')])[0].amount,0);assert.equal(validate([action('opening','pocket','0,00')])[0].amount,0);});
+
+test('screenshot regression: natural balance and receipt never consult Groq or invent money',async()=>{
+ const calls=groqCalls;
+ modelResult={kind:'chat',reply:'Да, добавлено 136000 рублей в кошелёк capital',actions:[]};
+ await text('сколько у меня щас денег?');assert.equal(groqCalls,calls);assert.match(sends.at(-1).text,/по записям/);assert.doesNotMatch(sends.at(-1).text,/136000/);
+ await text('добавил?');assert.equal(groqCalls,calls);assert.doesNotMatch(sends.at(-1).text,/Да, добавлено/);
+ await text('объясни свои слова');assert.doesNotMatch(sends.at(-1).text,/Да, добавлено|capital/);
+ const poisoned=await db.prepare("SELECT content FROM memory WHERE role='assistant' AND content LIKE '%136000%'").all();assert.equal(poisoned.results.length,0);
+});
+test('model balance intent is rendered from journal even when model supplies false prose',async()=>{
+ modelResult={kind:'balance',reply:'У тебя миллиард рублей',actions:[]};await text('покажи мои накопления пожалуйста');assert.match(sends.at(-1).text,/по записям/);assert.doesNotMatch(sends.at(-1).text,/миллиард/);
+});
+test('unknown is not zero and untrusted empty-wallet claim is blocked',async()=>{
+ modelResult={kind:'chat',reply:'Остальные кошельки пусты',actions:[]};await text('как там остальные');assert.doesNotMatch(sends.at(-1).text,/Остальные кошельки пусты/);
+});

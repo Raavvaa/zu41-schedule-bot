@@ -34,7 +34,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 let activated=false;
 try{
  config.vars.ENABLED='false';await writeFile('accountant/.deploy.json',JSON.stringify(config),{mode:0o600});cli(['deploy']);
- cli(['secret','bulk'],JSON.stringify({TELEGRAM_BOT_TOKEN:e.TELEGRAM_BOT_TOKEN,GROQ_API_KEY:e.GROQ_API_KEY,OWNER_CHAT_ID:e.OWNER_CHAT_ID,WEBHOOK_SECRET:hookSecret,ADMIN_SECRET:adminSecret}));
+ cli(['secret','bulk'],JSON.stringify({TELEGRAM_BOT_TOKEN:e.TELEGRAM_BOT_TOKEN,GROQ_API_KEY:e.GROQ_API_KEY,OWNER_CHAT_ID:e.OWNER_CHAT_ID,WEBHOOK_SECRET:hookSecret,ADMIN_SECRET:adminSecret,...(e.OWNER_CONTEXT?{OWNER_CONTEXT:e.OWNER_CONTEXT}:{})}));
  config.vars.ENABLED='true';await writeFile('accountant/.deploy.json',JSON.stringify(config),{mode:0o600});cli(['deploy']);activated=true;
  let health;
  for(let i=0;i<12;i++){try{health=await req(url+'/health');if(health.sha===sha&&health.enabled)break;}catch{}await sleep(1500);}
@@ -42,8 +42,9 @@ try{
  const probe=await req(url+'/ops/probe',{token:adminSecret,method:'POST',body:{}});if(!probe.ok)throw Error('Live Groq probe failed');
  await req('https://api.telegram.org/bot'+e.TELEGRAM_BOT_TOKEN+'/setWebhook',{method:'POST',body:{url:url+'/telegram',secret_token:hookSecret,allowed_updates:['message','callback_query'],max_connections:2,drop_pending_updates:false}});
  const hook=await req('https://api.telegram.org/bot'+e.TELEGRAM_BOT_TOKEN+'/getWebhookInfo');if(hook.result.url!==url+'/telegram')throw Error('Webhook not confirmed');
+ await cf('/workers/scripts/'+name+'/schedules','PUT',[{cron:'* * * * *'}]);
  const id=-Date.now(),owner=Number(e.OWNER_CHAT_ID);
- const r=await fetch(url+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':hookSecret},body:JSON.stringify({update_id:id,message:{from:{id:owner},chat:{id:owner,type:'private'},text:'/start'}}),signal:AbortSignal.timeout(10000)});if(!r.ok)throw Error('Owner live test not accepted');
+ const r=await fetch(url+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':hookSecret},body:JSON.stringify({update_id:id,message:{from:{id:owner},chat:{id:owner,type:'private'},text:'/balance'}}),signal:AbortSignal.timeout(10000)});if(!r.ok)throw Error('Owner live test not accepted');
  let out;
  for(let i=0;i<25;i++){out=(await sql('SELECT state,message_id,last_error FROM outbox WHERE id=?',[String(id)]))[0];if(out&&out.state!=='pending'&&out.state!=='sending')break;await sleep(1000);}
  let state;for(let i=0;i<20;i++){state=(await sql('SELECT last_cron,active FROM settings WHERE id=1'))[0];if(state.last_cron>0&&Date.now()-state.last_cron<180000)break;await sleep(3000);}
