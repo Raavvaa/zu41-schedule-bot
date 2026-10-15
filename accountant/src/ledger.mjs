@@ -13,7 +13,7 @@ export function validate(actions){
  if(!Array.isArray(actions)||!actions.length||actions.length>4)throw Error('actions');
  return actions.map(a=>{
   if(!['income','expense','transfer','opening'].includes(a.type)||!['capital','pocket'].includes(a.wallet)||!['RUB','AZN'].includes(a.currency))throw Error('action');
-  const n=a.type==='opening'&&String(a.amount).trim()==='0'?0:amount(a.amount);
+  const n=a.type==='opening'&&/^0(?:[.,]0{1,2})?$/.test(String(a.amount).trim())?0:amount(a.amount);
   if(a.type==='transfer'&&(!['capital','pocket'].includes(a.to)||a.to===a.wallet))throw Error('transfer');
   return {type:a.type,wallet:a.wallet,currency:a.currency,amount:n,...(a.type==='transfer'?{to:a.to}:{}),note:String(a.note??'').slice(0,160)};
  });

@@ -51,3 +51,6 @@ test('403 stops proactive messages; expired draft and negative balances are reje
 test('two opening balances can be confirmed together without mixing currencies',async()=>{
  await proposal('open-azn',[action('opening','capital',150,'AZN'),action('opening','pocket',25,'AZN')]);assert.equal((await apply('open-azn')).applied,true);const w=await ws();assert.equal(w.find(x=>x.wallet==='capital'&&x.currency==='AZN').amount,15000);assert.equal(w.find(x=>x.wallet==='pocket'&&x.currency==='AZN').amount,2500);
 });
+
+
+test('explicit zero opening accepts model decimal format',async()=>{assert.equal(validate([action('opening','pocket','0.00')])[0].amount,0);assert.equal(validate([action('opening','pocket','0,00')])[0].amount,0);});
