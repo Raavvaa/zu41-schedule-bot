@@ -22,6 +22,10 @@ let db=(await cf('/d1/database')).find(x=>x.name===name);
 if(!db)db=await cf('/d1/database','POST',{name});
 const sql=async(s,params=[])=>{const r=await cf('/d1/database/'+db.uuid+'/query','POST',{sql:s,params});return r[0].results;};
 for(const statement of (await readFile('accountant/migrations/0001.sql','utf8')).split(';').filter(x=>x.trim()))await sql(statement);
+if(!(await sql('PRAGMA table_info(outbox)')).some(x=>x.name==='last_error'))await sql('ALTER TABLE outbox ADD COLUMN last_error TEXT');
+// Restore the default support preference only after a deployment first-contact 403,
+// and only if there has never been a real owner update. Never override user settings.
+await sql('UPDATE settings SET proactive=1 WHERE active=0 AND NOT EXISTS(SELECT 1 FROM updates WHERE id>=0)');
 const sub=await cf('/workers/subdomain'),url=`https://${name}.${sub.subdomain}.workers.dev`;
 const config=JSON.parse(await readFile('accountant/wrangler.jsonc','utf8'));
 config.d1_databases[0].database_id=db.uuid;config.vars={...config.vars,SOURCE_SHA:sha};
@@ -41,9 +45,9 @@ try{
  const id=-Date.now(),owner=Number(e.OWNER_CHAT_ID);
  const r=await fetch(url+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':hookSecret},body:JSON.stringify({update_id:id,message:{from:{id:owner},chat:{id:owner,type:'private'},text:'/start'}}),signal:AbortSignal.timeout(10000)});if(!r.ok)throw Error('Owner live test not accepted');
  let out;
- for(let i=0;i<25;i++){out=(await sql('SELECT state,message_id FROM outbox WHERE id=?',[String(id)]))[0];if(out&&out.state!=='pending'&&out.state!=='sending')break;await sleep(1000);}
- const state=(await sql('SELECT last_cron,active FROM settings WHERE id=1'))[0];
- console.log('ACCOUNTANT_LIVE '+JSON.stringify({worker:url,bot_username:bot.result.username,private:true,groq:probe.ok,model:probe.model,webhook:true,telegram_confirmed:out?.state==='sent',message_id:out?.message_id??null,delivery_state:out?.state??'pending',cron_configured:true,cron_seen:state.last_cron>0,ledger_transactions:(await sql('SELECT count(*) AS n FROM transactions'))[0].n,sha}));
+ for(let i=0;i<25;i++){out=(await sql('SELECT state,message_id,last_error FROM outbox WHERE id=?',[String(id)]))[0];if(out&&out.state!=='pending'&&out.state!=='sending')break;await sleep(1000);}
+ let state;for(let i=0;i<20;i++){state=(await sql('SELECT last_cron,active FROM settings WHERE id=1'))[0];if(state.last_cron>0)break;await sleep(3000);}
+ console.log('ACCOUNTANT_LIVE '+JSON.stringify({worker:url,bot_username:bot.result.username,private:true,groq:probe.ok,model:probe.model,webhook:true,telegram_confirmed:out?.state==='sent',message_id:out?.message_id??null,delivery_state:out?.state??'pending',telegram_error:out?.last_error??null,needs_start:out?.last_error==='403',cron_configured:true,cron_seen:state.last_cron>0,ledger_transactions:(await sql('SELECT count(*) AS n FROM transactions'))[0].n,sha}));
  if(out?.state!=='sent')console.log('PHONE_STEP: Open bot and press Start; Telegram may forbid first contact. No duplicate resend attempted.');
 }catch(error){
  if(activated){try{config.vars.ENABLED='false';await writeFile('accountant/.deploy.json',JSON.stringify(config),{mode:0o600});cli(['deploy']);console.log('New accountant disabled on failure; schedule Worker untouched.');}catch{console.log('Accountant rollback not confirmed; schedule Worker untouched.');}}

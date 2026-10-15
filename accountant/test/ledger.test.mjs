@@ -42,7 +42,12 @@ test('Telegram 429 pauses sending; uncertain delivery is quarantined, not repeat
  await db.prepare('UPDATE settings SET telegram_pause=0').run();await db.prepare("UPDATE outbox SET due=0 WHERE id='rate'").run();tgError='uncertain';await call('/test/send',{});assert.equal((await db.prepare("SELECT state FROM outbox WHERE id='rate'").first()).state,'uncertain');await call('/test/send',{});assert.equal(sends.length,count);
 });
 test('403 stops proactive messages; expired draft and negative balances are rejected',async()=>{
- await db.prepare('DELETE FROM outbox').run();const time=Date.now();await db.prepare('INSERT INTO outbox(id,payload,due,created_at) VALUES(?,?,?,?)').bind('blocked',JSON.stringify({text:'local delivery test'}),time,time).run();tgError=403;await call('/test/send',{});const s=await db.prepare('SELECT active,proactive FROM settings WHERE id=1').first();assert.equal(s.active,0);assert.equal(s.proactive,0);
+ await db.prepare('DELETE FROM outbox').run();await db.prepare('UPDATE settings SET proactive=1').run();const time=Date.now();await db.prepare('INSERT INTO outbox(id,payload,due,created_at) VALUES(?,?,?,?)').bind('blocked',JSON.stringify({text:'local delivery test'}),time,time).run();tgError=403;await call('/test/send',{});const s=await db.prepare('SELECT active,proactive FROM settings WHERE id=1').first();assert.equal(s.active,0);assert.equal(s.proactive,1);assert.equal((await db.prepare("SELECT last_error FROM outbox WHERE id='blocked'").first()).last_error,'403');
  await proposal('expired',[action('income','pocket',1)]);await db.prepare("UPDATE drafts SET expires_at=0 WHERE id='expired'").run();assert.equal((await apply('expired')).applied,false);
  const before=await ws();await assert.rejects(()=>proposal('too-much',[action('expense','pocket',99999999)]));assert.deepEqual(await ws(),before);assert.equal(await db.prepare("SELECT id FROM drafts WHERE id='too-much'").first(),null);
+});
+
+
+test('two opening balances can be confirmed together without mixing currencies',async()=>{
+ await proposal('open-azn',[action('opening','capital',150,'AZN'),action('opening','pocket',25,'AZN')]);assert.equal((await apply('open-azn')).applied,true);const w=await ws();assert.equal(w.find(x=>x.wallet==='capital'&&x.currency==='AZN').amount,15000);assert.equal(w.find(x=>x.wallet==='pocket'&&x.currency==='AZN').amount,2500);
 });

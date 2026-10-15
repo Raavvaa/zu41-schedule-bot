@@ -1,4 +1,4 @@
-import {q,one,all,run,amount,money,propose,apply,balances,balanceText,draftText,walletName} from './ledger.mjs';
+import {q,one,all,run,amount,money,validate,propose,apply,balances,balanceText,draftText,walletName} from './ledger.mjs';
 import {brain} from './brain.mjs';
 const json=(v,status=200)=>Response.json(v,{status});
 const day=now=>new Date(now+10800000).toISOString().slice(0,10);
@@ -87,7 +87,7 @@ export async function sendPending(env,now=Date.now()){
    const r=await tg(env,'sendMessage',{chat_id:env.OWNER_CHAT_ID,...JSON.parse(m.payload)});
    if(r.ok)await run(env,"UPDATE outbox SET state='sent',message_id=? WHERE id=?",r.id,m.id);
    else if(r.error===429){await run(env,'UPDATE settings SET telegram_pause=? WHERE id=1',Date.now()+r.retry*1000);await run(env,"UPDATE outbox SET state='pending',due=? WHERE id=?",Date.now()+r.retry*1000,m.id);break;}
-   else{await run(env,'UPDATE outbox SET state=? WHERE id=?',r.error==='uncertain'?'uncertain':'failed',m.id);if(r.error===403){await run(env,'UPDATE settings SET proactive=0,active=0 WHERE id=1');break;}}
+   else{await run(env,'UPDATE outbox SET state=?,last_error=? WHERE id=?',r.error==='uncertain'?'uncertain':'failed',String(r.error),m.id);if(r.error===403){await run(env,'UPDATE settings SET active=0 WHERE id=1');break;}}
   }
  }finally{await unlock(env,'send',token);}
 }
@@ -131,7 +131,7 @@ export default {
     ctx.waitUntil(drain(env).catch(()=>{}));return json({ok:true});
    }
    if(u.pathname==='/ops/probe'&&req.method==='POST'&&env.ADMIN_SECRET&&await equal(req.headers.get('Authorization'),'Bearer '+env.ADMIN_SECRET)){
-    const result=await brain(env,'Проверка связи. Скажи коротко привет, без финансовых операций.',Date.now());return json({ok:result.kind==='chat'&&result.actions.length===0,model:env.GROQ_MODEL});
+    const result=await brain(env,'Сегодня заработал 4500 рублей. Из них 3000 рублей в капитал Сабунчи, остальные 1500 рублей в карманные. Предложи запись дохода и перевода, а не начальные остатки.',Date.now());const a=validate(result.actions);return json({ok:result.kind==='proposal'&&a.length===2&&a.some(x=>x.type==='income'&&x.wallet==='pocket'&&x.amount===450000&&x.currency==='RUB')&&a.some(x=>x.type==='transfer'&&x.wallet==='pocket'&&x.to==='capital'&&x.amount===300000&&x.currency==='RUB'),model:env.GROQ_MODEL,slang_parse:true});
    }
    return json({ok:false},404);
   }catch{return json({ok:false},503);}
