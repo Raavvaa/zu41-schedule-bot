@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 0462f4dfbc864182f989ae733f4891c6257db32e
+          ref: 8af06d3ad6a365a8124fe39ca9a3aee24b214c82
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
