@@ -26,6 +26,8 @@ function localAction(t){
 const help='🎙 Можно прислать голосовое до 90 секунд и 2 МБ (до 20 в день). Аудио передаётся Groq для распознавания; перед разбором покажу текст.\n\nБрат, можно писать как говоришь: «получил 4500 руб, трёшку в дом, остальное себе». Я покажу запись и спрошу подтверждение.\n\nЕсли Groq недоступен:\n/доход карманные RUB 3500 смена\n/расход карманные RUB 250 еда\n/перевод карманные RUB 3000\n/остаток капитал RUB 100000\n/цель 500000\n/план 25000\n/отмена — отменить последнюю запись с подтверждением\n/память текст — сохранить важное о себе\n/забыть — очистить контекст разговоров\n\nВсе суммы выше — примеры. Ничего не зачислено. RUB и AZN учитываются отдельно; курсы не выдумываю.\nСвободный текст и короткая история передаются Groq для понимания. ID и токены туда не отправляю.';
 export function financialIntent(text){
  const t=text.toLowerCase().replace(/ё/g,'е');
+ // Amounts and narrated transactions must reach interpretation, not keyword shortcuts.
+ if(/\d|(?:заплатил|потратил|получил|заработал|перевел|добавь|запиши|тысяч|сотен|полторы|тр[её]шк)/u.test(t))return null;
  if(/(?:добавил|записал|зачислил|сохранил|списал|подтвердил|получилось|почему.*подтверж|че тут так пишет)/u.test(t))return 'status';
  if(/(?:баланс|сколько.{0,35}(?:денег|денеж|бабок|бабла|остал|накоп|карман|сабунчи|капитал)|(?:денег|денеж|бабок).{0,20}сколько|(?:что|че).{0,20}(?:по деньгам|в кошельк)|скок.{0,20}(?:денег|бабла))/u.test(t))return 'balance';
  return null;
@@ -48,7 +50,7 @@ async function handle(env,b,now){
   if(voice){
    if(b.callback_query.id)await tg(env,'answerCallbackQuery',{callback_query_id:b.callback_query.id});
    const row=await one(env,"SELECT * FROM voice_inputs WHERE id=? AND state='ready' AND expires>?",voice[2],now);
-   if(!row)return reply(env,id,'Это голосовое уже обработано или устарело. Пришли новое.',now);
+   if(!row){const previous=await one(env,'SELECT state FROM voice_inputs WHERE id=?',voice[2]);return reply(env,id,previous?.state==='accepted'?'Этот текст уже передан на разбор. Ответ — ниже в переписке. Повторно ничего не записываю.':'Расшифровка отменена или устарела. Пришли новое голосовое.',now);}
    const state=voice[1]==='discard'?'cancelled':'accepted';
    const operations=[q(env,"UPDATE voice_inputs SET state=?,chosen_update=? WHERE id=? AND state='ready'",state,id,voice[2])];
    if(state==='accepted')operations.push(q(env,"INSERT OR IGNORE INTO updates(id,payload,created_at) SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM voice_inputs WHERE id=? AND state='accepted' AND chosen_update=?)",-Math.abs(Number(id)),JSON.stringify({update_id:-Math.abs(Number(id)),message:{text:row.text}}),now,voice[2],id));

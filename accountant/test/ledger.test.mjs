@@ -7,7 +7,7 @@ import {Miniflare} from 'miniflare';
 import {build} from 'esbuild';
 import {amount,validate} from '../src/ledger.mjs';
 import {voiceAllowed,recognized} from '../src/voice.mjs';
-import {owner} from '../src/index.mjs';
+import {owner,financialIntent} from '../src/index.mjs';
 let mf,db,dir,sends=[],groqCalls=0,modelResult={kind:'chat',reply:'Брат, как прошёл день?',actions:[]},groqError=false,tgError=null;
 let asrCalls=0,asrError=0,filePath='voice/file_1.oga',asrText='Я получил 300 рублей в карманные',asrSilence=false;
 const now=Date.now();
@@ -92,3 +92,5 @@ test('voice 429, silence, unsafe download and size failures never produce draft'
  asrSilence=true;await voiceMessage();assert.match(sends.at(-1).text,/уверенно/);asrSilence=false;
  const calls=asrCalls;filePath='https://attacker.invalid/a';await voiceMessage();assert.equal(asrCalls,calls);filePath='voice/file_1.oga';await voiceMessage(seq++,1001,{duration:300});assert.equal(asrCalls,calls);assert.deepEqual(await ws(),before);
 });
+
+test('narrated amounts never trigger balance or receipt shortcuts',()=>{for(const t of ['Смотри, 320 рублей заплатил за обед. Сейчас у меня на балансе карманных 4260 рублей.','На балансе 4260 рублей','Записал расход 320 рублей','получил полторы'])assert.equal(financialIntent(t),null);assert.equal(financialIntent('покажи баланс'),'balance');assert.equal(financialIntent('добавил?'),'status');});
