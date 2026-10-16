@@ -109,6 +109,12 @@ async function handle(env,b,now){
  if(text.startsWith('/'))return reply(env,id,help,now);
  if(!text)return reply(env,id,'Пришли текст или голосовое, брат.',now);
  if(text.length>2500)return reply(env,id,'Брат, сократи сообщение до 2500 символов — так надёжнее разберу.',now);
+ if(/(?:заплатил|потратил|оплатил|купил|расход)/iu.test(text)&&/(?:баланс|остаток|осталось)/iu.test(text)&&/\d/u.test(text)){
+  const clarification='Брат, названная оставшаяся сумма — уже после этой покупки или ещё до неё? Уточни, чтобы я не вычел расход дважды. Пока ничего не записываю.';
+  await memory(env,id+':user','user',text,now);
+  await memory(env,id+':assistant','assistant',clarification,now+1);
+  return reply(env,id,clarification,now);
+ }
  let result;
  try{result=await brain(env,text==='💬 Поговорим'?'Хочу поговорить. Спроси, как у меня дела.':text,now);}catch{return reply(env,id,'Брат, Groq сейчас недоступен или закончился дневной лимит. Деньги не потерялись: «Баланс», история и команды записи работают.\n\n'+help,now);}
  await memory(env,id+':user','user',text,now);
