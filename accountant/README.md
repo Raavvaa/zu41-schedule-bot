@@ -42,3 +42,17 @@ This assistant records cash and supports personal budgeting. It cannot transfer,
 block access to actual cash, verify bank balances, guarantee an investment outcome,
 or replace professional tax/legal advice. Initial goal/current cash must be confirmed
 inside Telegram; the code includes illustrative command examples only.
+
+
+## Voice input (v1.2)
+Owner-only Telegram voice notes: OGG/Opus, maximum 90 seconds / 2 MiB, 20 recognition attempts per Moscow date. Groq whisper-large-v3-turbo receives uploaded audio bytes, never a Telegram token-bearing download URL. Audio is not persisted in D1 or logs. The transcript expires after 15 minutes; accepted text follows existing conversation retention.
+
+Preview requires explicit “Разобрать” before interpretation. A monetary proposal still requires a separate ledger confirmation. Transcript acceptance and its durable queued update are committed in one D1 batch. Repeated clicks/updates cannot process the same transcript twice. Silence, low-confidence metadata, bad file paths, large streams and 429 are handled without guessing amounts. Replies are text; outgoing voice conversation is not part of this release.
+
+### Reviewed references / capability patterns
+- https://github.com/groq/groq-api-cookbook — official examples, speech recognition and structured application logic.
+- https://github.com/simonw/llm-groq-whisper — independent CLI integration; reviewed as an example, not installed in the Worker.
+- https://console.groq.com/docs/echokit — voice assistant integration; full hardware/voice stack is unnecessary for Telegram voice notes.
+- https://console.groq.com/docs/speech-to-text — multipart upload, multilingual Whisper, verbose confidence metadata.
+
+No external skill gets credentials or ledger write permissions. “Skills” here are bounded application capabilities: read journal, propose validated entry, confirm entry, interpret speech. Confirmation and exact arithmetic remain deterministic code.

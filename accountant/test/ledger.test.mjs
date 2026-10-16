@@ -6,10 +6,12 @@ import path from 'node:path';
 import {Miniflare} from 'miniflare';
 import {build} from 'esbuild';
 import {amount,validate} from '../src/ledger.mjs';
+import {voiceAllowed,recognized} from '../src/voice.mjs';
 import {owner} from '../src/index.mjs';
 let mf,db,dir,sends=[],groqCalls=0,modelResult={kind:'chat',reply:'Брат, как прошёл день?',actions:[]},groqError=false,tgError=null;
+let asrCalls=0,asrError=0,filePath='voice/file_1.oga',asrText='Я получил 300 рублей в карманные',asrSilence=false;
 const now=Date.now();
-function create(){return new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],d1Persist:dir,bindings:{OWNER_CHAT_ID:'1001',WEBHOOK_SECRET:'test-webhook',TELEGRAM_BOT_TOKEN:'test-token',GROQ_API_KEY:'test-groq',GROQ_MODEL:'openai/gpt-oss-20b',ENABLED:'true'},outboundService:async req=>{const u=new URL(req.url);if(u.hostname==='api.telegram.org'){const b=await req.json();if(u.pathname.endsWith('answerCallbackQuery'))return Response.json({ok:true,result:true});if(tgError){const e=tgError;tgError=null;if(e==='uncertain')throw Error('disconnect');return Response.json({ok:false,error_code:e,parameters:{retry_after:4}},{status:e});}sends.push(b);return Response.json({ok:true,result:{message_id:sends.length}});}if(u.hostname==='api.groq.com'){groqCalls++;const body=await req.json();assert.equal(body.model,'openai/gpt-oss-20b');assert.ok(!JSON.stringify(body).includes('test-token'));assert.ok(!JSON.stringify(body).includes('OWNER_CHAT_ID'));if(groqError)return Response.json({error:'down'},{status:429});return Response.json({choices:[{message:{content:JSON.stringify(modelResult)}}]});}throw Error('unexpected host');}});}
+function create(){return new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],d1Persist:dir,bindings:{OWNER_CHAT_ID:'1001',WEBHOOK_SECRET:'test-webhook',TELEGRAM_BOT_TOKEN:'test-token',GROQ_API_KEY:'test-groq',GROQ_MODEL:'openai/gpt-oss-20b',ENABLED:'true'},outboundService:async req=>{const u=new URL(req.url);if(u.hostname==='api.telegram.org'){if(u.pathname.includes('/file/bot'))return new Response(new Uint8Array([79,103,103,83,0]),{headers:{'content-type':'audio/ogg'}});const b=await req.json();if(u.pathname.endsWith('/getFile'))return Response.json({ok:true,result:{file_path:filePath,file_size:5}});if(u.pathname.endsWith('answerCallbackQuery'))return Response.json({ok:true,result:true});if(tgError){const e=tgError;tgError=null;if(e==='uncertain')throw Error('disconnect');return Response.json({ok:false,error_code:e,parameters:{retry_after:4}},{status:e});}sends.push(b);return Response.json({ok:true,result:{message_id:sends.length}});}if(u.hostname==='api.groq.com'){if(u.pathname.endsWith('/audio/transcriptions')){asrCalls++;const form=await req.formData();assert.equal(form.get('model'),'whisper-large-v3-turbo');assert.equal(form.get('language'),'ru');assert.ok(form.get('file') instanceof Blob);assert.equal(form.get('url'),null);if(asrError)return Response.json({error:'rate'},{status:asrError});return Response.json({text:asrText,segments:[{no_speech_prob:asrSilence?0.95:0.01,avg_logprob:-0.2,compression_ratio:1}]});}groqCalls++;const body=await req.json();assert.equal(body.model,'openai/gpt-oss-20b');assert.ok(!JSON.stringify(body).includes('test-token'));assert.ok(!JSON.stringify(body).includes('OWNER_CHAT_ID'));if(groqError)return Response.json({error:'down'},{status:429});return Response.json({choices:[{message:{content:JSON.stringify(modelResult)}}]});}throw Error('unexpected host');}});}
 async function call(route,b){const r=await mf.dispatchFetch('https://test'+route,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});return r.json();}
 let seq=1;
 async function text(t,uid=1001,id=seq++){await mf.dispatchFetch('https://test/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':'test-webhook'},body:JSON.stringify({update_id:id,message:{from:{id:uid},chat:{id:uid,type:'private'},text:t}})});await call('/test/drain',{now:Date.now()});}
@@ -68,4 +70,25 @@ test('model balance intent is rendered from journal even when model supplies fal
 });
 test('unknown is not zero and untrusted empty-wallet claim is blocked',async()=>{
  modelResult={kind:'chat',reply:'Остальные кошельки пусты',actions:[]};await text('как там остальные');assert.doesNotMatch(sends.at(-1).text,/Остальные кошельки пусты/);
+});
+
+async function voiceMessage(id=seq++,uid=1001,extra={}){await mf.dispatchFetch('https://test/telegram',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':'test-webhook'},body:JSON.stringify({update_id:id,message:{from:{id:uid},chat:{id:uid,type:'private'},voice:{file_id:'test_voice_id',duration:8,file_size:5,...extra}}})});await call('/test/drain',{now:Date.now()});if(uid===1001)for(let i=0;i<100;i++){const r=await db.prepare('SELECT state FROM outbox WHERE id=?').bind(String(id)).first();if(r?.state==='sent')break;await new Promise(r=>setTimeout(r,20));}return id;}
+test('voice rejects oversized, long, unsafe IDs and uncertain speech',()=>{
+ assert.equal(voiceAllowed({file_id:'ok',duration:91}),false);assert.equal(voiceAllowed({file_id:'../evil',duration:1}),false);assert.equal(voiceAllowed({file_id:'ok',duration:1,file_size:3e6}),false);
+ assert.throws(()=>recognized({text:'выдумка',segments:[]}));assert.throws(()=>recognized({text:'сто рублей',segments:[{no_speech_prob:0.8,avg_logprob:-0.1}]}));assert.throws(()=>recognized({text:'сто рублей',segments:[{no_speech_prob:0.1,avg_logprob:-1.2}]}));
+});
+test('voice preview changes no balance; duplicate update transcribes once and nonowner cannot transcribe',async()=>{
+ const before=await ws(),calls=asrCalls;const id=await voiceMessage();assert.equal(asrCalls,calls+1);assert.match(sends.at(-1).text,/Я услышал/);assert.deepEqual(await ws(),before);
+ await voiceMessage(id);await voiceMessage(seq++,1002);assert.equal(asrCalls,calls+1);assert.equal((await db.prepare('SELECT state FROM voice_inputs WHERE id=?').bind(String(id)).first()).state,'ready');
+ await callback('discard:'+id);assert.deepEqual(await ws(),before);await callback('hear:'+id);assert.deepEqual(await ws(),before);
+});
+test('voice recognition acceptance enqueues durable interpretation; money needs separate confirmation',async()=>{
+ modelResult={kind:'proposal',reply:'',actions:[action('income','pocket',300)]};asrText='Я получил триста рублей в карманные';const before=await ws();const id=await voiceMessage();const callbackId=seq;await callback('hear:'+id);assert.deepEqual(await ws(),before);
+ const draftId=String(-callbackId);assert.equal((await db.prepare('SELECT state FROM drafts WHERE id=?').bind(draftId).first()).state,'ready');await callback('yes:'+draftId);const after=await ws();assert.equal(after.find(x=>x.wallet==='pocket'&&x.currency==='RUB').amount,before.find(x=>x.wallet==='pocket'&&x.currency==='RUB').amount+30000);
+ await callback('hear:'+id);await callback('yes:'+draftId);assert.deepEqual(await ws(),after);
+});
+test('voice 429, silence, unsafe download and size failures never produce draft',async()=>{
+ const before=await ws();asrError=429;await voiceMessage();assert.match(sends.at(-1).text,/лимит/);asrError=0;
+ asrSilence=true;await voiceMessage();assert.match(sends.at(-1).text,/уверенно/);asrSilence=false;
+ const calls=asrCalls;filePath='https://attacker.invalid/a';await voiceMessage();assert.equal(asrCalls,calls);filePath='voice/file_1.oga';await voiceMessage(seq++,1001,{duration:300});assert.equal(asrCalls,calls);assert.deepEqual(await ws(),before);
 });

@@ -1,5 +1,6 @@
 import {q,one,all,run,amount,money,validate,propose,apply,balances,balanceText,draftText,walletName} from './ledger.mjs';
 import {brain,unsafeReply} from './brain.mjs';
+import {transcribe,voiceError} from './voice.mjs';
 const json=(v,status=200)=>Response.json(v,{status});
 const day=now=>new Date(now+10800000).toISOString().slice(0,10);
 const menu={keyboard:[['💰 Баланс','✍️ Записать'],['🎯 Цель','📒 История'],['⚙️ Настройки','💬 Поговорим']],resize_keyboard:true};
@@ -22,7 +23,7 @@ function localAction(t){
  const wallet=m[2].toLowerCase()==='капитал'?'capital':'pocket',type={доход:'income',расход:'expense',остаток:'opening',перевод:'transfer'}[m[1].toLowerCase()];
  return [{type,wallet,currency:m[3].toUpperCase(),amount:m[4],...(type==='transfer'?{to:wallet==='pocket'?'capital':'pocket'}:{}),note:m[5]??''}];
 }
-const help='Брат, можно писать как говоришь: «получил 4500 руб, трёшку в дом, остальное себе». Я покажу запись и спрошу подтверждение.\n\nЕсли Groq недоступен:\n/доход карманные RUB 3500 смена\n/расход карманные RUB 250 еда\n/перевод карманные RUB 3000\n/остаток капитал RUB 100000\n/цель 500000\n/план 25000\n/отмена — отменить последнюю запись с подтверждением\n/память текст — сохранить важное о себе\n/забыть — очистить контекст разговоров\n\nВсе суммы выше — примеры. Ничего не зачислено. RUB и AZN учитываются отдельно; курсы не выдумываю.\nСвободный текст и короткая история передаются Groq для понимания. ID и токены туда не отправляю.';
+const help='🎙 Можно прислать голосовое до 90 секунд и 2 МБ (до 20 в день). Аудио передаётся Groq для распознавания; перед разбором покажу текст.\n\nБрат, можно писать как говоришь: «получил 4500 руб, трёшку в дом, остальное себе». Я покажу запись и спрошу подтверждение.\n\nЕсли Groq недоступен:\n/доход карманные RUB 3500 смена\n/расход карманные RUB 250 еда\n/перевод карманные RUB 3000\n/остаток капитал RUB 100000\n/цель 500000\n/план 25000\n/отмена — отменить последнюю запись с подтверждением\n/память текст — сохранить важное о себе\n/забыть — очистить контекст разговоров\n\nВсе суммы выше — примеры. Ничего не зачислено. RUB и AZN учитываются отдельно; курсы не выдумываю.\nСвободный текст и короткая история передаются Groq для понимания. ID и токены туда не отправляю.';
 export function financialIntent(text){
  const t=text.toLowerCase().replace(/ё/g,'е');
  if(/(?:добавил|записал|зачислил|сохранил|списал|подтвердил|получилось|почему.*подтверж|че тут так пишет)/u.test(t))return 'status';
@@ -43,6 +44,19 @@ async function handle(env,b,now){
  const id=String(b.update_id),text=(b.message?.text??'').trim(),cb=b.callback_query?.data;
  await run(env,'UPDATE settings SET last_seen=?,active=1 WHERE id=1',now);
  if(cb){
+  const voice=cb.match(/^(hear|discard):(-?\d+)$/);
+  if(voice){
+   if(b.callback_query.id)await tg(env,'answerCallbackQuery',{callback_query_id:b.callback_query.id});
+   const row=await one(env,"SELECT * FROM voice_inputs WHERE id=? AND state='ready' AND expires>?",voice[2],now);
+   if(!row)return reply(env,id,'Это голосовое уже обработано или устарело. Пришли новое.',now);
+   const state=voice[1]==='discard'?'cancelled':'accepted';
+   const operations=[q(env,"UPDATE voice_inputs SET state=?,chosen_update=? WHERE id=? AND state='ready'",state,id,voice[2])];
+   if(state==='accepted')operations.push(q(env,"INSERT OR IGNORE INTO updates(id,payload,created_at) SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM voice_inputs WHERE id=? AND state='accepted' AND chosen_update=?)",-Math.abs(Number(id)),JSON.stringify({update_id:-Math.abs(Number(id)),message:{text:row.text}}),now,voice[2],id));
+   const chosen=await env.DB.batch(operations);
+   if(!chosen[0].meta.changes)return reply(env,id,'Голосовое уже обработано.',now);
+   if(state==='cancelled')return reply(env,id,'Отменил расшифровку. Можешь написать исправленный текст.',now);
+   return;
+  }
   if(b.callback_query.id)await tg(env,'answerCallbackQuery',{callback_query_id:b.callback_query.id});
   const m=cb.match(/^(yes|no):(-?\d+)$/);if(m){
    if(m[1]==='no'){await run(env,"UPDATE drafts SET state='cancelled' WHERE id=? AND state='ready'",m[2]);return reply(env,id,'Не записываю, брат.',now);}
@@ -55,6 +69,15 @@ async function handle(env,b,now){
    return reply(env,id,'Принял, брат. Настройки сохранены.',now);
   }
   return reply(env,id,'Кнопка устарела. Открой /start.',now);
+ }
+ if(b.message?.voice){
+  const prior=await one(env,'SELECT text,state FROM voice_inputs WHERE id=?',id);
+  if(prior&&prior.state!=='ready')return;
+  let heard=prior?.text;
+  if(!heard){try{heard=await transcribe(env,b.message.voice,now);}catch(e){return reply(env,id,voiceError(e),now);}
+   await run(env,"INSERT OR IGNORE INTO voice_inputs(id,text,expires) VALUES(?,?,?)",id,heard,now+15*60000);
+  }
+  return reply(env,id,'🎙 Я услышал:\n'+heard+'\n\nПроверь слова и суммы. Передать на разбор? Пока ничего не записано. Голос распознаёт Groq.',now,{inline_keyboard:[[{text:'✅ Разобрать',callback_data:'hear:'+id}],[{text:'❌ Не так / отмена',callback_data:'discard:'+id}]]});
  }
  if(text==='/start'||text==='/help')return reply(env,id,'С Бисмиллях, брат. Я твой личный бухгалтер: капитал Сабунчи отдельно, карманные отдельно.\n\n'+await balanceText(env)+'\n\n'+help,now);
  if(financialIntent(text)==='status')return reply(env,id,await recordStatus(env,now),now);
@@ -82,7 +105,7 @@ async function handle(env,b,now){
  }
  const direct=localAction(text);if(direct)return draft(env,id,direct,now);
  if(text.startsWith('/'))return reply(env,id,help,now);
- if(!text)return reply(env,id,'Пока понимаю текст, брат. Голосовое можешь пересказать одним сообщением.',now);
+ if(!text)return reply(env,id,'Пришли текст или голосовое, брат.',now);
  if(text.length>2500)return reply(env,id,'Брат, сократи сообщение до 2500 символов — так надёжнее разберу.',now);
  let result;
  try{result=await brain(env,text==='💬 Поговорим'?'Хочу поговорить. Спроси, как у меня дела.':text,now);}catch{return reply(env,id,'Брат, Groq сейчас недоступен или закончился дневной лимит. Деньги не потерялись: «Баланс», история и команды записи работают.\n\n'+help,now);}
@@ -117,10 +140,15 @@ export async function sendPending(env,now=Date.now()){
 export async function drain(env,now=Date.now()){
  const token=await lock(env,'dialog',now);if(!token)return;
  try{
-  const u=await one(env,"SELECT * FROM updates WHERE state='pending' OR state='processing' AND lease<=? ORDER BY created_at,id LIMIT 1",now);
+  let nextId=null;
+  for(let turn=0;turn<2;turn++){
+  const u=nextId!==null?await one(env,"SELECT * FROM updates WHERE id=? AND state='pending'",nextId):await one(env,"SELECT * FROM updates WHERE state='pending' OR state='processing' AND lease<=? ORDER BY created_at,id LIMIT 1",now);
   if(u){await run(env,"UPDATE updates SET state='processing',lease=? WHERE id=?",now+55000,u.id);
    try{await handle(env,JSON.parse(u.payload),now);await run(env,"UPDATE updates SET state='done',payload='{}' WHERE id=?",u.id);}
    catch{await reply(env,u.id,'Не удалось закончить запрос, брат. Проверь баланс перед повторной записью; подтверждённый журнал сохранён.',now);await run(env,"UPDATE updates SET state='failed',payload='{}' WHERE id=?",u.id);}
+  }
+  if(!u||!JSON.parse(u.payload).callback_query?.data?.startsWith('hear:'))break;
+  nextId=-Math.abs(Number(u.id));
   }
  }finally{await unlock(env,'dialog',token);}
  await sendPending(env);
@@ -143,7 +171,7 @@ export default {
  async fetch(req,env,ctx){
   try{
    const u=new URL(req.url);
-   if(u.pathname==='/health')return json({ok:true,version:'1.1.0',sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
+   if(u.pathname==='/health')return json({ok:true,version:'1.2.0',voice:true,sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
    if(u.pathname==='/telegram'&&req.method==='POST'){
     if(env.ENABLED!=='true'||!await equal(req.headers.get('X-Telegram-Bot-Api-Secret-Token'),env.WEBHOOK_SECRET))return json({ok:false},403);
     if(Number(req.headers.get('content-length'))>16384)return json({ok:false},413);
@@ -159,5 +187,5 @@ export default {
    return json({ok:false},404);
   }catch{return json({ok:false},503);}
  },
- async scheduled(event,env,ctx){if(env.ENABLED==='true')ctx.waitUntil((async()=>{await drain(env);await nudge(env);await sendPending(env);const now=Date.now();await env.DB.batch([q(env,'DELETE FROM memory WHERE at<?',now-30*86400000),q(env,"DELETE FROM updates WHERE state IN ('done','failed') AND created_at<?",now-30*86400000),q(env,"DELETE FROM drafts WHERE state!='ready' AND created_at<?",now-30*86400000)]);})());}
+ async scheduled(event,env,ctx){if(env.ENABLED==='true')ctx.waitUntil((async()=>{await drain(env);await nudge(env);await sendPending(env);const now=Date.now();await env.DB.batch([q(env,'DELETE FROM voice_inputs WHERE expires<?',now),q(env,'DELETE FROM memory WHERE at<?',now-30*86400000),q(env,"DELETE FROM updates WHERE state IN ('done','failed') AND created_at<?",now-30*86400000),q(env,"DELETE FROM drafts WHERE state!='ready' AND created_at<?",now-30*86400000)]);})());}
 };
