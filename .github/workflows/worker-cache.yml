@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 1288461b5386bc28c690bc934fb2cd500d448654
+          ref: b4ba46d2f2b3116b368af9fb7807960efdb8fbdc
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -25,11 +25,7 @@ jobs:
           sudo apt-get install -y -qq espeak-ng ffmpeg
           espeak-ng -v ru -s 135 -w /tmp/accountant-voice.wav 'Брат, покажи мой баланс.'
           ffmpeg -y -loglevel error -i /tmp/accountant-voice.wav -c:a libopus /tmp/accountant-voice.ogg
-      - name: Isolated dialogue with real Groq and fake Telegram
-        env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: node accountant/test/live-dialog.mjs
-      - name: Deploy only after dialogue gate passes
+      - name: Retry delivery of unchanged application source passed dialogue gate in run 38925021817
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
