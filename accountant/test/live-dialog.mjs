@@ -28,7 +28,7 @@ try{
  const before=await count();const r=await chat('',null,true);assert.match(r.text,/Я услышал/);assert.match(r.text,/баланс/i);assert.equal(await count(),before);
  const answer=await chat('', 'hear:'+r.id);assert.match(answer.text,/по записям/);assert.equal(await count(),before);
  });
- await check('expense plus stated balance is clarified, never swallowed as balance',async()=>{const n=await count();const r=await chat('Смотри, 320 рублей заплатил за комплексный обед, если че. Сейчас у меня на балансе карманных расходов 4260 рублей.');assert.doesNotMatch(r.text,/Брат, по записям сейчас|Groq сейчас недоступен/);assert.match(r.text,/до|после|уч[её]т/);assert.equal(await count(),n);});
+ await check('expense plus stated balance is clarified, never swallowed as balance',async()=>{const n=await count();const r=await chat('Смотри, 320 рублей заплатил за комплексный обед, если че. Сейчас у меня на балансе карманных расходов 4260 рублей.');assert.doesNotMatch(r.text,/Брат, по записям сейчас|Groq сейчас недоступен/);assert.match(r.text,/до|после|уч[её]т/);assert.equal(await count(),n);await db.prepare('DELETE FROM memory').run();});
  await check('real model proposes explicit opening, only confirm changes journal',async()=>{
  const r=await chat('У меня сейчас уже есть ровно 12000 рублей наличными в Сабунчи. Это весь текущий остаток капитала, не доход. Запиши начальный остаток.');
  const d=await db.prepare('SELECT * FROM drafts WHERE id=?').bind(String(r.id)).first();assert.ok(d,'no opening proposal; fixture reply: '+r.text);const p=JSON.parse(d.payload);assert.equal(p.actions[0].type,'opening');assert.equal(p.actions[0].amount,1200000);assert.equal(await count(),0);
