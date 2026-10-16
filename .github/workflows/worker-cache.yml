@@ -13,12 +13,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 3c9308bab2f1abd7325e3a2d424bd344e1088cfb
+          ref: 2e94cec930cb47c0e52aa49456ac92902e85ff19
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - run: npm ci --prefix accountant
       - run: npm test --prefix accountant
+      - name: Generate synthetic Russian audio fixture
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq espeak-ng ffmpeg
+          espeak-ng -v ru -s 135 -w /tmp/accountant-voice.wav 'Брат, покажи мой баланс.'
+          ffmpeg -y -loglevel error -i /tmp/accountant-voice.wav -c:a libopus /tmp/accountant-voice.ogg
       - name: Isolated dialogue with real Groq and fake Telegram
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
