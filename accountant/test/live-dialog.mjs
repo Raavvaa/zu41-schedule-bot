@@ -20,7 +20,7 @@ async function chat(text,callback,voice=false){const id=seq++;const before=sent.
  for(let i=0;i<25&&sent.length===before;i++){await rpc('drain',{now:Date.now()});if(sent.length===before)await new Promise(r=>setTimeout(r,1000));}
  assert.ok(sent.length>before,'reply absent');return {id,text:sent.at(-1).text};}
 const count=async()=>Number((await db.prepare('SELECT count(*) n FROM transactions').first()).n);
-const tests=[];async function check(name,fn){await new Promise(r=>setTimeout(r,15000));await fn();tests.push(name);console.log('DIALOG_PASS '+name);}
+const tests=[];async function check(name,fn){await new Promise(r=>setTimeout(r,15000));await db.prepare('DELETE FROM memory').run();await fn();tests.push(name);console.log('DIALOG_PASS '+name);}
 try{
  await db.exec((await readFile('accountant/migrations/0001.sql','utf8')).replace(/\n/g,' '));
  await check('unknown balance is unknown',async()=>{const r=await chat('сколько у меня щас денег?');assert.match(r.text,/не подтверждён/);assert.equal(calls,0);});
