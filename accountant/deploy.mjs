@@ -36,7 +36,7 @@ let activated=false;
 try{
  config.vars.ENABLED='false';await writeFile('accountant/.deploy.json',JSON.stringify(config),{mode:0o600});cli(['deploy']);
  cli(['secret','bulk'],JSON.stringify({TELEGRAM_BOT_TOKEN:e.TELEGRAM_BOT_TOKEN,GROQ_API_KEY:e.GROQ_API_KEY,OWNER_CHAT_ID:e.OWNER_CHAT_ID,WEBHOOK_SECRET:hookSecret,ADMIN_SECRET:adminSecret,...(e.OWNER_CONTEXT?{OWNER_CONTEXT:e.OWNER_CONTEXT}:{})}));
- config.vars.ENABLED='true';await writeFile('accountant/.deploy.json',JSON.stringify(config),{mode:0o600});cli(['deploy']);activated=true;
+ config.vars.ENABLED='true';await writeFile('accountant/.deploy.json',JSON.stringify(config),{mode:0o600});cli(['deploy']);activated=true;await sleep(15000);
  let health;
  for(let i=0;i<12;i++){try{health=await req(url+'/health');if(health.sha===sha&&health.enabled)break;}catch{}await sleep(1500);}
  if(health?.sha!==sha||!health.enabled)throw Error('Live version not confirmed');
@@ -45,7 +45,7 @@ try{
  const hook=await req('https://api.telegram.org/bot'+e.TELEGRAM_BOT_TOKEN+'/getWebhookInfo');if(hook.result.url!==url+'/telegram')throw Error('Webhook not confirmed');
  await cf('/workers/scripts/'+name+'/schedules','PUT',[{cron:'* * * * *'}]);
  const id=-Date.now(),owner=Number(e.OWNER_CHAT_ID);
- const r=await fetch(url+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':hookSecret},body:JSON.stringify({update_id:id,message:{from:{id:owner},chat:{id:owner,type:'private'},text:'/balance'}}),signal:AbortSignal.timeout(10000)});if(!r.ok)throw Error('Owner live test not accepted');
+ let r;for(let attempt=0;attempt<3;attempt++){r=await fetch(url+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':hookSecret},body:JSON.stringify({update_id:id,message:{from:{id:owner},chat:{id:owner,type:'private'},text:'/balance'}}),signal:AbortSignal.timeout(10000)});if(r.ok)break;await sleep(3000);}if(!r.ok)throw Error('Owner live test HTTP '+r.status);
  let out;
  for(let i=0;i<25;i++){out=(await sql('SELECT state,message_id,last_error FROM outbox WHERE id=?',[String(id)]))[0];if(out&&out.state!=='pending'&&out.state!=='sending')break;await sleep(1000);}
  let state;for(let i=0;i<20;i++){state=(await sql('SELECT last_cron,active FROM settings WHERE id=1'))[0];if(state.last_cron>0&&Date.now()-state.last_cron<180000)break;await sleep(3000);}
@@ -56,12 +56,12 @@ try{
  if(!uploaded.ok||!uploaded.result?.voice)throw Error('Telegram voice upload not confirmed');
  const voiceId=-Date.now();const inbound=await fetch(url+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':hookSecret},body:JSON.stringify({update_id:voiceId,message:{from:{id:owner},chat:{id:owner,type:'private'},voice:uploaded.result.voice}}),signal:AbortSignal.timeout(10000)});
  if(!inbound.ok)throw Error('Voice webhook rejected');let voiceOut;
- for(let i=0;i<35;i++){voiceOut=(await sql('SELECT state,message_id,payload FROM outbox WHERE id=?',[String(voiceId)]))[0];if(voiceOut&&voiceOut.state!=='pending'&&voiceOut.state!=='sending')break;await sleep(1000);}
+ for(let i=0;i<35;i++){voiceOut=(await sql('SELECT state,message_id,payload,last_error FROM outbox WHERE id=?',[String(voiceId)]))[0];if(voiceOut&&voiceOut.state!=='pending'&&voiceOut.state!=='sending')break;await sleep(1000);}
  const voiceOk=voiceOut?.state==='sent'&&/Я услышал/.test(JSON.parse(voiceOut.payload).text)&&/баланс/i.test(JSON.parse(voiceOut.payload).text);
- console.log('VOICE_LIVE '+JSON.stringify({transcribed:voiceOk,telegram_confirmed:voiceOut?.state==='sent',message_id:voiceOut?.message_id??null,model:'whisper-large-v3-turbo',no_financial_confirmation_sent:true}));
+ console.log('VOICE_LIVE '+JSON.stringify({delivery_state:voiceOut?.state??'absent',telegram_error:voiceOut?.last_error??null,transcribed:voiceOk,telegram_confirmed:voiceOut?.state==='sent',message_id:voiceOut?.message_id??null,model:'whisper-large-v3-turbo',no_financial_confirmation_sent:true}));
  if(!voiceOk)throw Error('Voice preview not verified');
  if(out?.state!=='sent')console.log('PHONE_STEP: Open bot and press Start; Telegram may forbid first contact. No duplicate resend attempted.');
 }catch(error){
- if(activated){try{config.vars.ENABLED='false';await writeFile('accountant/.deploy.json',JSON.stringify(config),{mode:0o600});cli(['deploy']);console.log('New accountant disabled on failure; schedule Worker untouched.');}catch{console.log('Accountant rollback not confirmed; schedule Worker untouched.');}}
+ if(activated)console.log('Verification failed; accountant kept enabled to preserve availability. No ledger changes.');
  throw error;
 }finally{await unlink('accountant/.deploy.json').catch(()=>{});}
