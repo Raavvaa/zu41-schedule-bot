@@ -1,4 +1,4 @@
-name: "Accountant dialogue safety and deploy"
+name: Accountant live replay verification
 on:
   workflow_dispatch:
 permissions:
@@ -7,35 +7,23 @@ concurrency:
   group: brat-accountant-deploy
   cancel-in-progress: false
 jobs:
-  verify-and-deploy:
+  verify-live:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 29566ff46f4dc58cba891104ea066c5a0169c952
+          ref: 9a04d3c648cf4a4214265be466d2fea6dce4d78e
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - run: npm ci --prefix accountant
       - run: npm test --prefix accountant
-      - name: Generate synthetic Russian audio fixture
-        run: |
-          sudo timeout 90 apt-get install -y -qq espeak-ng ffmpeg
-          espeak-ng -v ru -s 135 -w /tmp/accountant-voice.wav 'Брат, покажи мой баланс.'
-          ffmpeg -y -loglevel error -i /tmp/accountant-voice.wav -c:a libopus /tmp/accountant-voice.ogg
-      - name: Isolated dialogue with real Groq and fake Telegram
-        env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: node accountant/test/live-dialog.mjs
-      - name: Deploy only after dialogue gate passes
+      - name: Verify live reply without financial changes
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.SABUNCHI_BOT_TOKEN }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OWNER_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          OWNER_CONTEXT: ${{ secrets.SABUNCHI_OWNER_CONTEXT }}
           ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
-          FREE_PLAN_CONFIRMED: ${{ vars.FREE_PLAN_CONFIRMED }}
-        run: node accountant/deploy.mjs
+          EXPECTED_SHA: 29566ff46f4dc58cba891104ea066c5a0169c952
+        run: node accountant/verify-conversation.mjs
