@@ -33,6 +33,7 @@ export function changes(actions,ws){
 }
 export async function propose(env,id,raw,now,reversal=null){
  const actions=reversal?null:validate(raw),ws=await balances(env),s=await one(env,'SELECT revision FROM settings WHERE id=1');
+ if(!reversal&&actions.every(a=>a.type==='opening'&&ws.some(w=>w.wallet===a.wallet&&w.currency===a.currency&&w.initialized&&w.amount===a.amount)))throw Error('unchanged');
  const ds=reversal?reversal.entries.map(x=>({wallet:x.wallet,currency:x.currency,delta:-x.delta})):changes(actions,ws);
  for(const d of ds){const w=ws.find(x=>x.wallet===d.wallet&&x.currency===d.currency);
   if(!w||!Number.isSafeInteger(d.delta)||w.amount+d.delta<0)throw Error('insufficient');

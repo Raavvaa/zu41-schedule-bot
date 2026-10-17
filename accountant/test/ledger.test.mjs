@@ -104,3 +104,14 @@ test('ordinary financial conversation and clarification are not mistaken for fab
  await text('пока что брат также. напомни че у меня там');assert.match(sends.at(-1).text,/цель.*дом.*Сабунчи/);assert.doesNotMatch(sends.at(-1).text,/уточни: это/);
  assert.equal((await db.prepare('SELECT count(*) n FROM transactions').first()).n,before);
 });
+
+ test('completed opening cannot be replayed by acknowledgments, even with hostile model proposals',async()=>{
+ const r=seq;await text('/остаток капитал RUB 136000');await callback('yes:'+r);
+ const before=await ws(),n=(await db.prepare('SELECT count(*) n FROM transactions').first()).n;
+ modelResult={kind:'proposal',reply:'',actions:[action('opening','capital',136000)]};
+ for(const phrase of ['четко','да вме правильно друг','ДА И ВЧЕ ХВАТИТ ЗАДАВАТЬ ВОПРОСЫ','спасибо','ага','да','ок']){
+  const id=seq;await text(phrase);assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(id)).first(),null);assert.doesNotMatch(sends.at(-1).text,/Всё верно/);
+ }
+ await text('/остаток капитал RUB 136000');assert.match(sends.at(-1).text,/уже сохранён/);
+ await callback('yes:'+r);assert.deepEqual(await ws(),before);assert.equal((await db.prepare('SELECT count(*) n FROM transactions').first()).n,n);
+ });

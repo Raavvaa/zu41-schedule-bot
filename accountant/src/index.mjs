@@ -16,7 +16,7 @@ async function draft(env,id,actions,now,reversal=null){
  try{
   const p=await propose(env,id,actions,now,reversal);const protectedCapital=p.entries.some(x=>x.wallet==='capital'&&x.delta<0);
   return reply(env,id,(protectedCapital?'⚠️ Брат, это уменьшит капитал Сабунчи. Если трата уже была, учтём честно.\n\n':'')+draftText(p),now,{inline_keyboard:[[{text:protectedCapital?'⚠️ Подтверждаю снятие капитала':'✅ Записать',callback_data:'yes:'+id}],[{text:'❌ Отмена',callback_data:'no:'+id}]]});
- }catch(e){return reply(env,id,e.message==='insufficient'?'Брат, по записям в кошельке не хватает денег. Если остаток неверный — напиши «/остаток карманные RUB 5000» с реальной суммой.':e.message==='uninitialized'?'Сначала подтвердим остатки, брат. Пример: /остаток карманные RUB 5000\nДля капитала: /остаток капитал RUB 100000\nЭто примеры формата, не запись денег.':'Не смог надёжно разобрать сумму и кошелёк. Напиши проще: /доход карманные RUB 3500 смена',now);}
+ }catch(e){return reply(env,id,e.message==='unchanged'?'Этот остаток уже сохранён, брат. Повторная запись не нужна.':e.message==='insufficient'?'Брат, по записям в кошельке не хватает денег. Если остаток неверный — напиши «/остаток карманные RUB 5000» с реальной суммой.':e.message==='uninitialized'?'Сначала подтвердим остатки, брат. Пример: /остаток карманные RUB 5000\nДля капитала: /остаток капитал RUB 100000\nЭто примеры формата, не запись денег.':'Не смог надёжно разобрать сумму и кошелёк. Напиши проще: /доход карманные RUB 3500 смена',now);}
 }
 function localAction(t){
  const m=t.match(/^\/(доход|расход|остаток|перевод)\s+(капитал|карманные)\s+(RUB|AZN)\s+(\d+(?:[.,]\d{1,2})?)(?:\s+(.*))?$/i);if(!m)return null;
@@ -113,7 +113,7 @@ async function handle(env,b,now){
  if(/(?:заплатил|потратил|оплатил|купил|расход)/iu.test(text)&&/(?:баланс|остаток|осталось)/iu.test(text)&&/\d/u.test(text)){
   const clarification='Брат, названная оставшаяся сумма — уже после этой покупки или ещё до неё? Уточни, чтобы я не вычел расход дважды. Пока ничего не записываю.';
   await memory(env,id+':user','user',text,now);
-  await memory(env,id+':assistant','assistant',clarification,now+1);
+  await memory(env,id+':clarify','assistant',clarification,now+1);
   return reply(env,id,clarification,now);
  }
  let result;
@@ -126,7 +126,7 @@ async function handle(env,b,now){
  // Never echo model-generated monetary facts or success claims into the chat/memory.
  if(result.kind==='wish'&&unsafeReply(result.reply))return reply(env,id,'Брат, это желание, поэтому ничего не списываю. Планируешь взять из карманных или из капитала Сабунчи? Капитал бережём; покупку можно спокойно обдумать.',now);
  if(unsafeReply(result.reply))return reply(env,id,'Брат, уточни: это уже имеющийся остаток, новый доход, расход или пока только план? Для записи нужны сумма, валюта и кошелёк. Пока ничего не изменено.\n\n'+await balanceText(env),now);
- await memory(env,id+':assistant','assistant',result.reply,now+1);
+ await memory(env,id+(result.kind==='clarify'?':clarify':':assistant'),'assistant',result.reply,now+1);
  return reply(env,id,result.reply,now);
 }
 export async function sendPending(env,now=Date.now()){
