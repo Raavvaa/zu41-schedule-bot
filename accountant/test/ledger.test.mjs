@@ -98,7 +98,7 @@ test('narrated amounts never trigger balance or receipt shortcuts',()=>{for(cons
 
 test('ordinary financial conversation and clarification are not mistaken for fabricated facts',async()=>{
  for(const reply of ['Брат, цель Сабунчи помню. Как прошёл день?','В какой кошелёк записать расход?','Сабр, брат. Деньги считаем спокойно.','Я здесь, брат. Обсудим твой план?'])assert.equal(unsafeReply(reply),false);
- for(const reply of ['Да, записал','У тебя 5000 рублей','Остальные кошельки пусты','Денег нет'])assert.equal(unsafeReply(reply),true);
+ for(const reply of ['Да, записал','У тебя 5000 рублей','У тебя сто рублей','Остальные кошельки пусты','Денег нет'])assert.equal(unsafeReply(reply),true);
  const before=(await db.prepare('SELECT count(*) n FROM transactions').first()).n;
  modelResult={kind:'chat',reply:'Я здесь, брат. Можем обсудить деньги, Сабунчи или просто поговорить.',actions:[]};await text('что с тобой');assert.match(sends.at(-1).text,/Я здесь/);assert.doesNotMatch(sends.at(-1).text,/уточни: это/);
  await text('пока что брат также. напомни че у меня там');assert.match(sends.at(-1).text,/цель.*дом.*Сабунчи/);assert.doesNotMatch(sends.at(-1).text,/уточни: это/);

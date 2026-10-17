@@ -60,6 +60,7 @@ try{
  const voiceOk=voiceOut?.state==='sent'&&/Я услышал/.test(JSON.parse(voiceOut.payload).text)&&/баланс/i.test(JSON.parse(voiceOut.payload).text);
  console.log('VOICE_LIVE '+JSON.stringify({delivery_state:voiceOut?.state??'absent',telegram_error:voiceOut?.last_error??null,transcribed:voiceOk,telegram_confirmed:voiceOut?.state==='sent',message_id:voiceOut?.message_id??null,model:'whisper-large-v3-turbo',no_financial_confirmation_sent:true}));
  if(!voiceOk)throw Error('Voice preview not verified');
+ const conversation=spawnSync('node',['accountant/verify-conversation.mjs'],{env:{...e,EXPECTED_SHA:sha},stdio:'inherit',timeout:120000});if(conversation.status!==0)throw Error('Production conversation not verified');
  if(out?.state!=='sent')console.log('PHONE_STEP: Open bot and press Start; Telegram may forbid first contact. No duplicate resend attempted.');
 }catch(error){
  if(activated)console.log('Verification failed; accountant kept enabled to preserve availability. No ledger changes.');
