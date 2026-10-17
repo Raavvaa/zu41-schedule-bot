@@ -115,3 +115,26 @@ test('ordinary financial conversation and clarification are not mistaken for fab
  await text('/остаток капитал RUB 136000');assert.match(sends.at(-1).text,/уже сохранён/);
  await callback('yes:'+r);assert.deepEqual(await ws(),before);assert.equal((await db.prepare('SELECT count(*) n FROM transactions').first()).n,n);
  });
+
+test('recent clarification can complete an amountless answer; expired clarification cannot',async()=>{
+ await db.prepare('DELETE FROM memory').run();
+ await text('потратил 30 рублей, остаток 900 рублей');
+ modelResult={kind:'proposal',reply:'',actions:[action('opening','pocket',900)]};
+ const id=seq;await text('уже после покупки, карманные');assert.ok(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(id)).first());await callback('no:'+id);
+ await db.prepare('DELETE FROM memory').run();await db.prepare('INSERT INTO memory VALUES(?,?,?,?)').bind('old:clarify','assistant','До или после?',Date.now()-16*60000).run();
+ const old=seq;await text('после покупки');assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(old)).first(),null);
+});
+test('cancelled proposal and restart do not restore financial intent',async()=>{
+ const id=seq;await text('/доход карманные RUB 70');await callback('no:'+id);const before=await ws();
+ await mf.dispose();mf=create();db=await mf.getD1Database('DB');
+ modelResult={kind:'proposal',reply:'',actions:[action('income','pocket',70)]};const ack=seq;await text('понял брат');assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(ack)).first(),null);assert.deepEqual(await ws(),before);
+});
+test('two explicitly requested equal incomes remain separate legitimate operations',async()=>{
+ const before=(await ws()).find(x=>x.wallet==='pocket'&&x.currency==='RUB').amount;
+ for(let i=0;i<2;i++){const id=seq;await text('/доход карманные RUB 70');await callback('yes:'+id);}
+ assert.equal((await ws()).find(x=>x.wallet==='pocket'&&x.currency==='RUB').amount,before+14000);
+});
+test('unchanged confirmed zero is not another opening, but unknown zero is initialized',async()=>{
+ const id=seq;await text('/остаток карманные AZN 0');await callback('yes:'+id);const count=(await db.prepare('SELECT count(*) n FROM transactions').first()).n;
+ const again=seq;await text('/остаток карманные AZN 0');assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(again)).first(),null);assert.equal((await db.prepare('SELECT count(*) n FROM transactions').first()).n,count);
+});
