@@ -6,6 +6,7 @@ import path from 'node:path';
 import {Miniflare} from 'miniflare';
 import {build} from 'esbuild';
 import {amount,validate} from '../src/ledger.mjs';
+import {unsafeReply} from '../src/brain.mjs';
 import {voiceAllowed,recognized} from '../src/voice.mjs';
 import {owner,financialIntent} from '../src/index.mjs';
 let mf,db,dir,sends=[],groqCalls=0,modelResult={kind:'chat',reply:'Брат, как прошёл день?',actions:[]},groqError=false,tgError=null;
@@ -14,7 +15,7 @@ const now=Date.now();
 function create(){return new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],d1Persist:dir,bindings:{OWNER_CHAT_ID:'1001',WEBHOOK_SECRET:'test-webhook',TELEGRAM_BOT_TOKEN:'test-token',GROQ_API_KEY:'test-groq',GROQ_MODEL:'openai/gpt-oss-20b',ENABLED:'true'},outboundService:async req=>{const u=new URL(req.url);if(u.hostname==='api.telegram.org'){if(u.pathname.includes('/file/bot'))return new Response(new Uint8Array([79,103,103,83,0]),{headers:{'content-type':'audio/ogg'}});const b=await req.json();if(u.pathname.endsWith('/getFile'))return Response.json({ok:true,result:{file_path:filePath,file_size:5}});if(u.pathname.endsWith('answerCallbackQuery'))return Response.json({ok:true,result:true});if(tgError){const e=tgError;tgError=null;if(e==='uncertain')throw Error('disconnect');return Response.json({ok:false,error_code:e,parameters:{retry_after:4}},{status:e});}sends.push(b);return Response.json({ok:true,result:{message_id:sends.length}});}if(u.hostname==='api.groq.com'){if(u.pathname.endsWith('/audio/transcriptions')){asrCalls++;const form=await req.formData();assert.equal(form.get('model'),'whisper-large-v3-turbo');assert.equal(form.get('language'),'ru');assert.ok(form.get('file') instanceof Blob);assert.equal(form.get('url'),null);if(asrError)return Response.json({error:'rate'},{status:asrError});return Response.json({text:asrText,segments:[{no_speech_prob:asrSilence?0.95:0.01,avg_logprob:-0.2,compression_ratio:1}]});}groqCalls++;const body=await req.json();assert.equal(body.model,'openai/gpt-oss-20b');assert.ok(!JSON.stringify(body).includes('test-token'));assert.ok(!JSON.stringify(body).includes('OWNER_CHAT_ID'));if(groqError)return Response.json({error:'down'},{status:429});return Response.json({choices:[{message:{content:JSON.stringify(modelResult)}}]});}throw Error('unexpected host');}});}
 async function call(route,b){const r=await mf.dispatchFetch('https://test'+route,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)});return r.json();}
 let seq=1;
-async function text(t,uid=1001,id=seq++){await mf.dispatchFetch('https://test/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':'test-webhook'},body:JSON.stringify({update_id:id,message:{from:{id:uid},chat:{id:uid,type:'private'},text:t}})});await call('/test/drain',{now:Date.now()});}
+async function text(t,uid=1001,id=seq++){await mf.dispatchFetch('https://test/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':'test-webhook'},body:JSON.stringify({update_id:id,message:{from:{id:uid},chat:{id:uid,type:'private'},text:t}})});await call('/test/drain',{now:Date.now()});for(let i=0;i<100;i++){const row=await db.prepare('SELECT state FROM outbox WHERE id=?').bind(String(id)).first();if(row?.state==='sent')break;await new Promise(r=>setTimeout(r,20));await call('/test/drain',{now:Date.now()});}}
 async function callback(data,id=seq++){await mf.dispatchFetch('https://test/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':'test-webhook'},body:JSON.stringify({update_id:id,callback_query:{id:'cb',data,from:{id:1001},message:{chat:{id:1001,type:'private'}}}})});await call('/test/drain',{now:Date.now()});}
 async function proposal(id,actions){return call('/test/propose',{id,actions,now:Date.now()});}
 async function apply(id){return call('/test/apply',{id,now:Date.now()});}
@@ -94,3 +95,12 @@ test('voice 429, silence, unsafe download and size failures never produce draft'
 });
 
 test('narrated amounts never trigger balance or receipt shortcuts',()=>{for(const t of ['Смотри, 320 рублей заплатил за обед. Сейчас у меня на балансе карманных 4260 рублей.','На балансе 4260 рублей','Записал расход 320 рублей','получил полторы'])assert.equal(financialIntent(t),null);assert.equal(financialIntent('покажи баланс'),'balance');assert.equal(financialIntent('добавил?'),'status');});
+
+test('ordinary financial conversation and clarification are not mistaken for fabricated facts',async()=>{
+ for(const reply of ['Брат, цель Сабунчи помню. Как прошёл день?','В какой кошелёк записать расход?','Сабр, брат. Деньги считаем спокойно.','Я здесь, брат. Обсудим твой план?'])assert.equal(unsafeReply(reply),false);
+ for(const reply of ['Да, записал','У тебя 5000 рублей','Остальные кошельки пусты','Денег нет'])assert.equal(unsafeReply(reply),true);
+ const before=(await db.prepare('SELECT count(*) n FROM transactions').first()).n;
+ modelResult={kind:'chat',reply:'Я здесь, брат. Можем обсудить деньги, Сабунчи или просто поговорить.',actions:[]};await text('что с тобой');assert.match(sends.at(-1).text,/Я здесь/);assert.doesNotMatch(sends.at(-1).text,/уточни: это/);
+ await text('пока что брат также. напомни че у меня там');assert.match(sends.at(-1).text,/цель.*дом.*Сабунчи/);assert.doesNotMatch(sends.at(-1).text,/уточни: это/);
+ assert.equal((await db.prepare('SELECT count(*) n FROM transactions').first()).n,before);
+});

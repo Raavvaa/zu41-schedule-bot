@@ -20,5 +20,7 @@ export async function brain(env,text,now){
 
 // Model prose is never an accounting receipt or a source of monetary facts.
 export function unsafeReply(text){
- return /(?:\d|[₽$€]|рубл|руб(?:\b|\.)|AZN|RUB|манат|тысяч|тыщ|кошел|баланс|остат[ок]|капитал|карманн|сабунчи|нол[ьё]|нул[ья]|ден[еь]г|сумм|зачис|списа[лн]|добав(?:ил|лен)|записа[лн]|сохран(?:ил|ён|ен)|зафиксир|перев[её][лд]|уч[её][лт]|пуст[оы]|внес[её]|пополни|подтвержд)/iu.test(text);
+ // Financial nouns and questions are normal conversation. Block invented figures,
+ // receipts, and unsupported empty/zero-wallet claims instead.
+ return /(?:\d|[₽$€]|(?:тысяч|тыщ|миллион|миллиард)|(?:зачисл(?:ил|ено)|списа(?:л|но)|добав(?:ил|лено)|записа(?:л|но)|зафиксирова(?:л|но)|пополни(?:л|ли)|перев[её]л)|(?:кошел[\s\S]{0,40}пуст|пуст[\s\S]{0,40}кошел)|(?:ноль|нуль|нулевой|нет денег|денег нет))/iu.test(text);
 }

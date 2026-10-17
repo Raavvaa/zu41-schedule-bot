@@ -85,6 +85,7 @@ async function handle(env,b,now){
  if(financialIntent(text)==='status')return reply(env,id,await recordStatus(env,now),now);
  if(text==='💰 Баланс'||text==='/balance'||financialIntent(text)==='balance')return reply(env,id,await balanceText(env),now);
  if(text==='✍️ Записать')return reply(env,id,'Напиши, что уже получил или потратил, сумму и кошелёк. Если только хочешь купить — скажи «хочу», я ничего не спишу.\n\n'+help,now);
+ if(/напомни.{0,35}(?:че|чё|что|у меня|цел|план)/iu.test(text))return reply(env,id,'Брат, твоя цель — накопить на дом в Сабунчи. Капитал и карманные учитываем отдельно. Текущие подтверждённые суммы:\n\n'+await balanceText(env),now);
  if(text==='🎯 Цель')return reply(env,id,await balanceText(env)+'\n\nЧтобы задать личную цель в рублях: /цель 500000\nПлан накоплений на месяц: /план 25000\nСрок и бюджет сделки обсудим отдельно, без выдуманного курса.',now);
  const goal=text.match(/^\/(цель|план)\s+(\d+(?:[.,]\d{1,2})?)$/);
  if(goal){try{const n=amount(goal[2]);await run(env,`UPDATE settings SET ${goal[1]==='цель'?'goal':'monthly'}=? WHERE id=1`,n);return reply(env,id,'Принял: '+(goal[1]==='цель'?'цель ':'план на месяц ')+money(n)+'. Кошельки не менял.',now);}catch{return reply(env,id,'Нужна положительная сумма в рублях, например /цель 500000.',now);}}
