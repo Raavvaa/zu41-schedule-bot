@@ -9,11 +9,11 @@ concurrency:
 jobs:
   verify-and-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 9a04d3c648cf4a4214265be466d2fea6dce4d78e
+          ref: e6900ba7f6de6a1f46bc821527b7c76f927e84bd
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
