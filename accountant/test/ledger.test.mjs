@@ -10,10 +10,11 @@ import {unsafeReply} from '../src/brain.mjs';
 import {voiceAllowed,recognized} from '../src/voice.mjs';
 import {owner,financialIntent} from '../src/index.mjs';
 let mf,db,dir,sends=[],groqCalls=0,modelResult={kind:'chat',reply:'Брат, как прошёл день?',actions:[]},groqError=false,tgError=null;
-let modelQueue=[],requests=[];
+let modelQueue=[],requests=[],duringModel=null;
 let asrCalls=0,asrError=0,filePath='voice/file_1.oga',asrText='Я получил 300 рублей в карманные',asrSilence=false;
 const now=Date.now();
 function create(){return new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],d1Persist:dir,bindings:{OWNER_CHAT_ID:'1001',WEBHOOK_SECRET:'test-webhook',TELEGRAM_BOT_TOKEN:'test-token',GROQ_API_KEY:'test-groq',GROQ_MODEL:'openai/gpt-oss-20b',ENABLED:'true'},outboundService:async req=>{const u=new URL(req.url);if(u.hostname==='api.telegram.org'){if(u.pathname.includes('/file/bot'))return new Response(new Uint8Array([79,103,103,83,0]),{headers:{'content-type':'audio/ogg'}});const b=await req.json();if(u.pathname.endsWith('/getFile'))return Response.json({ok:true,result:{file_path:filePath,file_size:5}});if(u.pathname.endsWith('answerCallbackQuery'))return Response.json({ok:true,result:true});if(tgError){const e=tgError;tgError=null;if(e==='uncertain')throw Error('disconnect');return Response.json({ok:false,error_code:e,parameters:{retry_after:4}},{status:e});}sends.push(b);return Response.json({ok:true,result:{message_id:sends.length}});}if(u.hostname==='api.groq.com'){if(u.pathname.endsWith('/audio/transcriptions')){asrCalls++;const form=await req.formData();assert.equal(form.get('model'),'whisper-large-v3-turbo');assert.equal(form.get('language'),'ru');assert.ok(form.get('file') instanceof Blob);assert.equal(form.get('url'),null);if(asrError)return Response.json({error:'rate'},{status:asrError});return Response.json({text:asrText,segments:[{no_speech_prob:asrSilence?0.95:0.01,avg_logprob:-0.2,compression_ratio:1}]});}groqCalls++;const body=await req.json();assert.equal(body.model,'openai/gpt-oss-20b');assert.ok(!JSON.stringify(body).includes('test-token'));assert.ok(!JSON.stringify(body).includes('OWNER_CHAT_ID'));if(groqError)return Response.json({error:'down'},{status:429});requests.push(body);const next=modelQueue.shift()??modelResult;
+if(duringModel){const hook=duringModel;duringModel=null;await hook();}
 if(next.error)return Response.json({error:{code:next.error}},{status:400});
 if(next.plain)return Response.json({choices:[{message:{role:'assistant',content:next.plain}}]});
 const mapped=next.tool?{name:next.tool,args:next.args??{}}:next.kind==='proposal'?(next.actions[0]?.type==='opening'?{name:'set_balance',args:next.actions[0]}:{name:'propose_transaction',args:{actions:next.actions}}):{name:'respond',args:{kind:next.kind,text:next.reply}};
@@ -175,4 +176,95 @@ test('ordinary prose and one repaired tool-format error do not alter financial s
  const before=await ws();modelQueue=[{error:'tool_use_failed'},{plain:'Слышу тебя, брат. Отдохни немного после смены.'}];
  const calls=groqCalls;await text('Брат устал после смены, поддержи');assert.match(sends.at(-1).text,/Слышу тебя/);assert.equal(groqCalls,calls+2);assert.deepEqual(await ws(),before);
  modelResult={plain:'Да, записал 999999 рублей'};await text('скажи что получилось');assert.doesNotMatch(sends.at(-1).text,/Да, записал/);assert.deepEqual(await ws(),before);
+});
+
+test('income now and split remainder reach the proposal tool',async()=>{
+ await db.prepare('DELETE FROM memory').run();
+ for(const [phrase,actions] of [
+  ['сейчас получил 5000 рублей в карманные',[action('income','pocket',5000)]],
+  ['получил 4500 рублей, 3000 в дом, остаток себе',[action('income','pocket',4500),action('transfer','pocket',3000,'RUB','capital')]]]){
+  modelResult={tool:'propose_transaction',args:{actions}};const id=seq;await text(phrase);
+  const d=await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(id)).first();assert.ok(d);assert.match(sends.at(-1).text,/→/);await callback('no:'+id);
+ }
+});
+test('punctuation after a thousand suffix preserves the target amount',async()=>{
+ modelResult={tool:'set_balance',args:{wallet:'pocket',currency:'RUB',amount:'4500',note:'сверка'}};
+ const id=seq;await text('В карманных сейчас 4.5к, исправь остаток.');
+ const d=await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(id)).first();assert.equal(JSON.parse(d.payload).actions[0].amount,450000);await callback('no:'+id);
+});
+test('explicit after-purchase balance asks no redundant question and is not deducted twice',async()=>{
+ const open=seq;await text('/остаток карманные RUB 5129');await callback('yes:'+open);
+ modelResult={tool:'propose_transaction',args:{actions:[action('expense','pocket',350)]}};
+ const calls=groqCalls,id=seq;await text('Заплатил 350 рублей за обед, осталось после покупки в карманных 4779 рублей');assert.equal(groqCalls,calls);
+ assert.ok(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(id)).first());assert.doesNotMatch(sends.at(-1).text,/до неё|до или после/);
+ await callback('yes:'+id);assert.equal((await ws()).find(w=>w.wallet==='pocket'&&w.currency==='RUB').amount,477900);
+});
+test('model sees major-unit preferences and current user amounts can be discussed',async()=>{
+ await text('/цель 500000');await text('/план 25000');
+ modelResult={plain:'Ты получил 4500 рублей. Как распределим?'};await text('Сегодня получил 4500 рублей');assert.match(sends.at(-1).text,/4500/);
+ const s=requests.at(-1).messages.find(m=>m.content?.startsWith('CURRENT_STATE=')).content;
+ assert.ok(s.includes('"goal":500000'));assert.ok(s.includes('"monthly":25000'));assert.ok(!s.includes('"goal":50000000'));
+ modelResult={plain:'Твоя цель — 500000 рублей.'};await text('Какая сумма цели?');assert.match(sends.at(-1).text,/500000/);
+});
+test('notes append without loss, deduplicate and reject overflow without erasing history',async()=>{
+ await db.prepare("UPDATE settings SET context='' WHERE id=1").run();
+ await text('/память Люблю короткие ответы');await text('/память Работаю геодезистом');
+ modelResult={tool:'remember_note',args:{note:'Не писать утром'}};await text('Запомни: не писать утром');
+ const expected='Люблю короткие ответы\nРаботаю геодезистом\nНе писать утром';assert.equal((await db.prepare('SELECT context FROM settings').first()).context,expected);
+ await text('/память Работаю геодезистом');assert.equal((await db.prepare('SELECT context FROM settings').first()).context,expected);
+ await text('/память '+ 'я'.repeat(1000));const before=(await db.prepare('SELECT context FROM settings').first()).context;
+ await text('/память '+'б'.repeat(1000));assert.equal((await db.prepare('SELECT context FROM settings').first()).context,before);assert.match(sends.at(-1).text,/не добавил/);
+});
+test('receipt negation is local and normal descriptions are not receipts',async()=>{
+ assert.equal(unsafeReply('Записал, не переживай'),true);assert.equal(unsafeReply('Ты записал лишние 3000'),false);assert.equal(unsafeReply('Пока ничего не записал'),false);
+ modelResult={plain:'Записал, не переживай'};await text('Скажи что случилось');assert.doesNotMatch(sends.at(-1).text,/Записал, не переживай/);
+ assert.equal(financialIntent('ты записал мои слова неправильно'),null);modelResult={plain:'Ты хотел купить хлеб.'};const calls=groqCalls;await text('напомни что купить хлеб');assert.equal(groqCalls,calls+1);assert.match(sends.at(-1).text,/хлеб/);
+});
+test('cancel tool supplies a fresh snapshot and repeated tool calls stop',async()=>{
+ const p=seq;await text('/доход капитал RUB 250');
+ modelQueue=[{tool:'cancel_proposal',args:{}},{tool:'read_ledger',args:{}},{kind:'balance',reply:''}];await text('стоп а было сколько?');
+ const toolResults=requests.at(-1).messages.filter(m=>m.role==='tool').map(m=>JSON.parse(m.content));assert.equal(toolResults[0].snapshot.pending,null);assert.equal(toolResults[0].snapshot.last_cancelled_proposal.id,String(p));
+ modelQueue=[{tool:'read_ledger',args:{}},{tool:'read_ledger',args:{}}];const calls=groqCalls;await text('проверь записи для меня');assert.equal(groqCalls,calls+2);assert.match(sends.at(-1).text,/повторяюсь/);
+});
+test('proposal replay returns persisted card even if model changes its mind',async()=>{
+ const first=await proposal('same-id',[action('income','pocket',100)]);const replay=await proposal('same-id',[action('income','pocket',900)]);assert.deepEqual(replay,first);
+ const stored=JSON.parse((await db.prepare("SELECT payload FROM drafts WHERE id='same-id'").first()).payload);assert.deepEqual(replay,stored);
+});
+test('unrelated answer after clarification cannot reuse old amounts',async()=>{
+ await db.prepare('DELETE FROM memory').run();modelResult={kind:'clarify',reply:'В какой кошелёк?',actions:[]};await text('получил 3000');
+ modelResult={tool:'propose_transaction',args:{actions:[action('income','pocket',3000)]}};const id=seq;await text('брат устал после работы');assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(id)).first(),null);
+});
+test('one drain consumes two queued texts without Cron, preserving order',async()=>{
+ await db.prepare('DELETE FROM updates').run();await db.prepare('DELETE FROM outbox').run();await db.prepare('DELETE FROM locks').run();
+ modelResult={plain:'Слышу тебя.'};const first=seq++,second=seq++;const clock=Date.now();
+ for(const [id,t] of [[first,'/balance'],[second,'/history']])await db.prepare('INSERT INTO updates(id,payload,created_at) VALUES(?,?,?)').bind(id,JSON.stringify({update_id:id,message:{text:t}}),clock).run();
+ await call('/test/drain',{now:clock});const rows=(await db.prepare('SELECT id,state FROM updates ORDER BY id').all()).results;assert.deepEqual(rows,[{id:first,state:'done'},{id:second,state:'done'}]);
+ assert.equal((await db.prepare("SELECT count(*) n FROM outbox WHERE state='sent'").first()).n,2);
+});
+
+test('burst correction is interpreted once from a durably merged update',async()=>{
+ await db.prepare('DELETE FROM updates').run();await db.prepare('DELETE FROM outbox').run();await db.prepare('DELETE FROM locks').run();
+ const clock=Date.now(),first=seq++,second=seq++;modelResult={tool:'propose_transaction',args:{actions:[action('income','pocket',4000)]}};
+ for(const [id,t] of [[first,'Сейчас получил 5000 рублей в карманные'],[second,'Ой, не 5000, а 4000 рублей']])await db.prepare('INSERT INTO updates(id,payload,created_at) VALUES(?,?,?)').bind(id,JSON.stringify({update_id:id,message:{text:t}}),clock).run();
+ const calls=groqCalls;await call('/test/drain',{now:clock});assert.equal(groqCalls,calls+1);assert.ok(requests.at(-1).messages.at(-1).content.includes('\nОй'));
+ assert.equal((await db.prepare('SELECT count(*) n FROM outbox').first()).n,1);
+ const d=JSON.parse((await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(first)).first()).payload);assert.equal(d.actions[0].amount,400000);
+ assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(second)).first(),null);
+});
+test('unexplained numeric proposal is rejected without a draft',async()=>{
+ modelResult={tool:'propose_transaction',args:{actions:[action('income','pocket',9900)]}};
+ const id=seq;await text('получил 5000 рублей в карманные');assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(id)).first(),null);assert.match(sends.at(-1).text,/не совпала/);
+});
+
+test('correction arriving during inference replaces unsent proposal before rendering',async()=>{
+ await db.prepare('DELETE FROM updates').run();await db.prepare('DELETE FROM outbox').run();await db.prepare('DELETE FROM locks').run();
+ const first=seq++,second=seq++,clock=Date.now();modelResult={tool:'propose_transaction',args:{actions:[action('income','pocket',5000)]}};
+ await db.prepare('INSERT INTO updates(id,payload,created_at) VALUES(?,?,?)').bind(first,JSON.stringify({update_id:first,message:{text:'получил 5000 рублей в карманные'}}),clock).run();
+ duringModel=async()=>{await db.prepare('INSERT INTO updates(id,payload,created_at) VALUES(?,?,?)').bind(second,JSON.stringify({update_id:second,message:{text:'ой не 5000, а 4000 рублей'}}),Date.now()).run();modelResult={tool:'propose_transaction',args:{actions:[action('income','pocket',4000)]}};};
+ const calls=groqCalls;await call('/test/drain',{now:clock});assert.equal(groqCalls,calls+2);
+ const d=JSON.parse((await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(first)).first()).payload);assert.equal(d.actions[0].amount,400000);assert.equal((await db.prepare('SELECT count(*) n FROM outbox').first()).n,1);
+});
+test('reversed order of balance and purchase cannot swap their amounts',async()=>{
+ const open=seq;await text('/остаток карманные RUB 5129');await callback('yes:'+open);
+ modelResult={kind:'clarify',reply:'Уточню покупку.',actions:[]};const id=seq;await text('Сейчас в карманных 4779, заплатил 350 рублей за обед');assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(id)).first(),null);
 });

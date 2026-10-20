@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 const voiceBytes=await readFile(process.env.VOICE_FIXTURE??'/tmp/accountant-voice.ogg');
-const dir=await mkdtemp(path.join(tmpdir(),'brat-live-'));let calls=0,sent=[],seq=100;
+const dir=await mkdtemp(path.join(tmpdir(),'brat-live-'));let calls=0,sent=[],seq=100;const turns=[];
 await build({entryPoints:['accountant/test/entry.mjs'],outfile:path.join(dir,'bundle.mjs'),bundle:true,format:'esm',platform:'browser'});
 const mf=new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],bindings:{OWNER_CHAT_ID:'1001',WEBHOOK_SECRET:'test-only',TELEGRAM_BOT_TOKEN:'fake',GROQ_API_KEY:process.env.GROQ_API_KEY,GROQ_MODEL:'openai/gpt-oss-120b',ENABLED:'true'},outboundService:async req=>{
  const u=new URL(req.url);
@@ -16,9 +16,9 @@ const mf=new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modu
 }});
 const db=await mf.getD1Database('DB');
 const rpc=async(route,b)=>{const r=await mf.dispatchFetch('https://local/test/'+route,{method:'POST',body:JSON.stringify(b)});if(!r.ok)throw Error('test RPC failed');return r.json();};
-async function chat(text,callback,voice=false){const id=seq++;const before=sent.length;await mf.dispatchFetch('https://local/telegram',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':'test-only'},body:JSON.stringify({update_id:id,...(callback?{callback_query:{id:'cb',data:callback,from:{id:1001},message:{chat:{id:1001,type:'private'}}}}:{message:{from:{id:1001},chat:{id:1001,type:'private'},...(voice?{voice:{file_id:'sandbox_voice_id',duration:5,file_size:voiceBytes.length}}:{text})}})})});
+async function chat(text,callback,voice=false){const id=seq++;const before=sent.length,started=Date.now(),beforeCalls=calls;await mf.dispatchFetch('https://local/telegram',{method:'POST',headers:{'X-Telegram-Bot-Api-Secret-Token':'test-only'},body:JSON.stringify({update_id:id,...(callback?{callback_query:{id:'cb',data:callback,from:{id:1001},message:{chat:{id:1001,type:'private'}}}}:{message:{from:{id:1001},chat:{id:1001,type:'private'},...(voice?{voice:{file_id:'sandbox_voice_id',duration:5,file_size:voiceBytes.length}}:{text})}})})});
  for(let i=0;i<25&&sent.length===before;i++){await rpc('drain',{now:Date.now()});if(sent.length===before)await new Promise(r=>setTimeout(r,1000));}
- assert.ok(sent.length>before,'reply absent');assert.doesNotMatch(sent.at(-1).text,/исчерпан лимит|Groq временно|Модель не успела|не смог проверить|Сервис модели сейчас/);return {id,text:sent.at(-1).text};}
+ assert.ok(sent.length>before,'reply absent');assert.doesNotMatch(sent.at(-1).text,/исчерпан лимит|Groq временно|Модель не успела|не смог проверить|Сервис модели сейчас/);turns.push({ms:Date.now()-started,model_calls:calls-beforeCalls,callback:!!callback,voice});return {id,text:sent.at(-1).text};}
 const count=async()=>Number((await db.prepare('SELECT count(*) n FROM transactions').first()).n);
 const tests=[];async function check(name,fn){await new Promise(r=>setTimeout(r,25000));await db.prepare('DELETE FROM memory').run();await fn();tests.push(name);console.log('DIALOG_PASS '+name);}
 try{
@@ -67,5 +67,27 @@ try{
  await pause();const undo=await chat('Последнюю запись сделал ошибочно, отмени её');const ud=await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(undo.id)).first();assert.ok(ud,'undo absent');assert.equal(JSON.parse(ud.payload).reversal_of,String(corrected.id));await chat('','no:'+undo.id);
  await pause();const reset=await chat('удали все деньги из Сабунчи, заново начнем');assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(reset.id)).first(),null);assert.equal((await rpc('balances',{})).find(w=>w.wallet==='capital'&&w.currency==='RUB').amount,12700000);
  });
+
+ await check('income with now is a new income, not a correction',async()=>{
+ const r=await chat('Сейчас получил 5000 рублей в карманные за смену');const d=await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(r.id)).first();assert.ok(d,'income now absent');const a=JSON.parse(d.payload).actions;assert.equal(a.length,1);assert.equal(a[0].type,'income');assert.equal(a[0].amount,500000);await chat('','no:'+r.id);
+ });
+ await check('remainder split is atomic without extra clarification',async()=>{
+ const r=await chat('Получил 4500 рублей, 3000 в дом Сабунчи, остаток себе в карманные');const d=await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(r.id)).first();assert.ok(d,'split absent');const a=JSON.parse(d.payload).actions;assert.equal(a.length,2);assert.ok(a.some(x=>x.type==='income'&&x.wallet==='pocket'&&x.amount===450000));assert.ok(a.some(x=>x.type==='transfer'&&x.to==='capital'&&x.amount===300000));assert.match(r.text,/→/);await chat('','no:'+r.id);
+ });
+ await check('punctuation preserves thousand scale',async()=>{
+ const r=await chat('В карманных сейчас 5к. Исправь остаток, это не новый доход.');const d=await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(r.id)).first();assert.ok(d,'punctuated amount absent');assert.equal(JSON.parse(d.payload).actions[0].amount,500000);await chat('','no:'+r.id);
+ });
+ await check('purchase and mathematically matching balance need one confirmation',async()=>{
+ const open=await chat('/остаток карманные RUB 5129');await chat('','yes:'+open.id);const r=await chat('Заплатил 350 рублей за обед, сейчас в карманных 4779 рублей');const d=await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(r.id)).first();assert.ok(d,'matched expense absent');const a=JSON.parse(d.payload).actions;assert.equal(a.length,1);assert.equal(a[0].type,'expense');assert.equal(a[0].amount,35000);await chat('','yes:'+r.id);assert.equal((await rpc('balances',{})).find(w=>w.wallet==='pocket'&&w.currency==='RUB').amount,477900);
+ });
+ await check('three notes survive without replacing earlier preferences',async()=>{
+ await db.prepare("UPDATE settings SET context='' WHERE id=1").run();await chat('/память Предпочитаю короткие ответы');await chat('/память Работаю геодезистом');await chat('Запомни: утром не люблю сообщения');const c=(await db.prepare('SELECT context FROM settings').first()).context;assert.match(c,/короткие/);assert.match(c,/геодезист/);assert.match(c,/утр/);
+ });
+ await check('burst correction produces one draft for the corrected income',async()=>{
+ const first=seq++,second=seq++,clock=Date.now();for(const [id,t] of [[first,'Сейчас получил 5000 рублей в карманные'],[second,'Ой, не 5000, а 4000 рублей в карманные, поправь предложение']])await db.prepare('INSERT INTO updates(id,payload,created_at) VALUES(?,?,?)').bind(id,JSON.stringify({update_id:id,message:{text:t}}),clock).run();
+ const beforeCalls=calls;await rpc('drain',{now:clock});const d=await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(first)).first();assert.ok(d,'merged correction absent');assert.equal(JSON.parse(d.payload).actions[0].amount,400000);assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(second)).first(),null);assert.ok(calls-beforeCalls<=2);await chat('','no:'+first);
+ });
+ const modelTurns=turns.filter(t=>t.model_calls&&!t.voice),percentile=(xs,p)=>{const s=xs.toSorted((a,b)=>a-b);return s[Math.max(0,Math.ceil(s.length*p)-1)]??null;};
+ console.log('DIALOG_METRICS '+JSON.stringify({turns:turns.length,model_turns:modelTurns.length,model_turn_p50_ms:percentile(modelTurns.map(t=>t.ms),.5),model_turn_p95_ms:percentile(modelTurns.map(t=>t.ms),.95),model_calls_per_model_turn:modelTurns.length?modelTurns.reduce((n,t)=>n+t.model_calls,0)/modelTurns.length:null,all_turn_p50_ms:percentile(turns.map(t=>t.ms),.5),all_turn_p95_ms:percentile(turns.map(t=>t.ms),.95),text_confirmation_clicks:1,voice_confirmation_clicks:2,memory_notes_retained:3,scope:'release-1 regression fixtures; not arbitrary conversations'}));
  console.log('LIVE_DIALOG_RESULT '+JSON.stringify({passed:tests.length,groq_calls:calls,isolated_database:true,telegram_network_calls:0}));
 }finally{await mf.dispose();await rm(dir,{recursive:true,force:true});}

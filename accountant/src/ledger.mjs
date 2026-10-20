@@ -32,6 +32,8 @@ export function changes(actions,ws){
  return [...ds].map(([k,delta])=>{const [wallet,currency]=k.split(':');return {wallet,currency,delta};});
 }
 export async function propose(env,id,raw,now,reversal=null){
+ const existing=await one(env,'SELECT payload FROM drafts WHERE id=?',id);
+ if(existing)return JSON.parse(existing.payload);
  const actions=reversal?null:validate(raw),ws=await balances(env),s=await one(env,'SELECT revision FROM settings WHERE id=1');
  if(!reversal&&actions.every(a=>a.type==='opening'&&ws.some(w=>w.wallet===a.wallet&&w.currency===a.currency&&w.initialized&&w.amount===a.amount)))throw Error('unchanged');
  const ds=reversal?reversal.entries.map(x=>({wallet:x.wallet,currency:x.currency,delta:-x.delta})):changes(actions,ws);
@@ -43,7 +45,8 @@ export async function propose(env,id,raw,now,reversal=null){
  await env.DB.batch([
  q(env,"UPDATE drafts SET state='cancelled' WHERE state='ready' AND id!=? AND NOT EXISTS(SELECT 1 FROM drafts WHERE id=?)",id,id),
  q(env,'INSERT OR IGNORE INTO drafts(id,payload,revision,created_at,expires_at) VALUES(?,?,?,?,?)',id,JSON.stringify(payload),s.revision,now,now+15*60000)]);
- return payload;
+ // Concurrent/retried inference must display the exact persisted proposal.
+ return JSON.parse((await one(env,'SELECT payload FROM drafts WHERE id=?',id)).payload);
 }
 export async function apply(env,id,now){
  const d=await one(env,"SELECT * FROM drafts WHERE id=? AND state='ready' AND expires_at>?",id,now);
@@ -73,5 +76,7 @@ export function draftText(p){
  const before=p.before?.find(w=>w.wallet===a.wallet&&w.currency===a.currency)?.amount;
  if(a.type==='opening')return `${walletName(a.wallet)}: ${before==null?'остаток неизвестен':money(before,a.currency)} → ${money(a.amount,a.currency)}\nЭто установка правильного остатка, не новый доход.`;
  return `${a.type==='income'?'+':a.type==='expense'?'−':'Перевод'} ${money(a.amount,a.currency)} · ${walletName(a.wallet)}${a.to?' → '+walletName(a.to):''}${a.note?' · '+a.note:''}`;
- }).join('\n');return text+'\n\nПока ничего не записано. Всё верно?';
+ }).join('\n');
+ const preview=p.actions?.every(a=>a.type==='opening')?'':p.entries.map(e=>{const before=p.before?.find(w=>w.wallet===e.wallet&&w.currency===e.currency)?.amount;return before==null?'':`${walletName(e.wallet)}: ${money(before,e.currency)} → ${money(before+e.delta,e.currency)}`;}).filter(Boolean).join('\n');
+ return text+(preview?'\n\n'+preview:'')+'\n\nПока ничего не записано. Всё верно?';
 }

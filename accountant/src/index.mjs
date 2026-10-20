@@ -1,10 +1,11 @@
 import {q,one,all,run,amount,money,validate,propose,apply,balances,balanceText,draftText,walletName} from './ledger.mjs';
-import {brain,unsafeReply} from './brain.mjs';
+import {brain,unsafeReply,statedAmounts} from './brain.mjs';
 import {transcribe,voiceError} from './voice.mjs';
 const json=(v,status=200)=>Response.json(v,{status});
 const day=now=>new Date(now+10800000).toISOString().slice(0,10);
 const menu={keyboard:[['💰 Баланс','✍️ Записать'],['🎯 Цель','📒 История'],['⚙️ Настройки','💬 Поговорим']],resize_keyboard:true};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const batchable=b=>typeof b.message?.text==='string'&&!b.callback_query&&!b.message.voice&&!/^(?:\/|💰|✍️|🎯|📒|⚙️|💬)/u.test(b.message.text)&&!financialIntent(b.message.text);
 async function equal(a,b){if(!a||!b)return false;const hash=x=>crypto.subtle.digest('SHA-256',new TextEncoder().encode(x));const [aa,bb]=await Promise.all([hash(a),hash(b)]);let diff=0;new Uint8Array(aa).forEach((x,i)=>{diff|=x^new Uint8Array(bb)[i];});return diff===0;}
 export function owner(env,b){const m=b.message??b.callback_query?.message,from=b.message?.from??b.callback_query?.from;const id=String(env.OWNER_CHAT_ID??'');return /^[1-9]\d*$/.test(id)&&Number.isSafeInteger(Number(id))&&m?.chat?.type==='private'&&String(m.chat.id)===id&&String(from?.id)===id;}
 async function lock(env,name,now,ttl=55000){const token=crypto.randomUUID();const r=await run(env,'INSERT INTO locks VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET token=excluded.token,expires=excluded.expires WHERE expires<=?',name,token,now+ttl,now);return r.meta.changes?token:null;}
@@ -12,6 +13,14 @@ async function unlock(env,name,token){await run(env,'DELETE FROM locks WHERE nam
 async function tg(env,method,body){try{const r=await fetch('https://api.telegram.org/bot'+env.TELEGRAM_BOT_TOKEN+'/'+method,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(8000)});const d=await r.json();return {ok:d.ok===true,id:d.result?.message_id,error:d.error_code??r.status,retry:Math.max(1,Number(d.parameters?.retry_after)||30)};}catch{return {ok:false,error:'uncertain'};}}
 async function reply(env,id,text,now,markup=menu){await run(env,'INSERT OR IGNORE INTO outbox(id,payload,due,created_at) VALUES(?,?,?,?)',String(id),JSON.stringify({text:String(text).slice(0,3900),...(markup?{reply_markup:markup}:{}),link_preview_options:{is_disabled:true}}),now,now);}
 async function memory(env,id,role,content,now){await run(env,'INSERT OR IGNORE INTO memory VALUES(?,?,?,?)',id,role,content.slice(0,2500),now);}
+async function appendNote(env,note){
+ const current=(await one(env,'SELECT context FROM settings WHERE id=1')).context??'';
+ note=note.trim().slice(0,1000);if(!note)return false;
+ if(current.split('\n').includes(note))return true;
+ const combined=[current,note].filter(Boolean).join('\n');
+ if(combined.length>1500)return false;
+ await run(env,'UPDATE settings SET context=? WHERE id=1',combined);return true;
+}
 async function draft(env,id,actions,now,reversal=null){
  try{
   const p=await propose(env,id,actions,now,reversal);const protectedCapital=p.entries.some(x=>x.wallet==='capital'&&x.delta<0)&&!p.actions?.every(a=>a.type==='opening');
@@ -28,7 +37,7 @@ export function financialIntent(text){
  const t=text.toLowerCase().replace(/ё/g,'е');
  // Amounts and narrated transactions must reach interpretation, not keyword shortcuts.
  if(/\d|(?:заплатил|потратил|получил|заработал|перевел|добавь|запиши|тысяч|сотен|полторы|тр[её]шк)/u.test(t))return null;
- if(/(?:добавил|записал|зачислил|сохранил|списал|подтвердил|получилось|почему.*подтверж|че тут так пишет)/u.test(t))return 'status';
+ if(/^(?:(?:брат|ты|а|ну)\s+)*(?:добавил|записал|зачислил|сохранил|списал|подтвердил|получилось)[\s?!,.]*$/u.test(t))return 'status';
  if(/(?:баланс|сколько.{0,35}(?:денег|денеж|бабок|бабла|остал|накоп|карман|сабунчи|капитал)|(?:денег|денеж|бабок).{0,20}сколько|(?:что|че).{0,20}(?:по деньгам|в кошельк)|скок.{0,20}(?:денег|бабла))/u.test(t))return 'balance';
  return null;
 }
@@ -42,7 +51,7 @@ async function recordStatus(env,now){
  else if(await one(env,'SELECT id FROM transactions LIMIT 1'))status='В журнале есть подтверждённые записи. Текущие остатки — ниже.';
  return status+'\n\n'+await balanceText(env);
 }
-async function handleTurn(env,b,now){
+async function handleTurn(env,b,now,deadline){
  const id=String(b.update_id),text=(b.message?.text??'').trim(),cb=b.callback_query?.data;
  await run(env,'UPDATE settings SET last_seen=?,active=1 WHERE id=1',now);
  if(cb){
@@ -85,7 +94,7 @@ async function handleTurn(env,b,now){
  if(financialIntent(text)==='status')return reply(env,id,await recordStatus(env,now),now);
  if(text==='💰 Баланс'||text==='/balance'||financialIntent(text)==='balance')return reply(env,id,await balanceText(env),now);
  if(text==='✍️ Записать')return reply(env,id,'Напиши, что уже получил или потратил, сумму и кошелёк. Если только хочешь купить — скажи «хочу», я ничего не спишу.\n\n'+help,now);
- if(/напомни.{0,35}(?:че|чё|что|у меня|цел|план)/iu.test(text))return reply(env,id,'Брат, твоя цель — накопить на дом в Сабунчи. Капитал и карманные учитываем отдельно. Текущие подтверждённые суммы:\n\n'+await balanceText(env),now);
+ if(/напомни\s+(?:(?:че|чё|что)\s+у меня\s+там|(?:мою\s+)?цель|(?:мой\s+)?план)[\s?!,.]*$/iu.test(text))return reply(env,id,'Брат, твоя цель — накопить на дом в Сабунчи. Капитал и карманные учитываем отдельно. Текущие подтверждённые суммы:\n\n'+await balanceText(env),now);
  if(text==='🎯 Цель')return reply(env,id,await balanceText(env)+'\n\nЧтобы задать личную цель в рублях: /цель 500000\nПлан накоплений на месяц: /план 25000\nСрок и бюджет сделки обсудим отдельно, без выдуманного курса.',now);
  const goal=text.match(/^\/(цель|план)\s+(\d+(?:[.,]\d{1,2})?)$/);
  if(goal){try{const n=amount(goal[2]);await run(env,`UPDATE settings SET ${goal[1]==='цель'?'goal':'monthly'}=? WHERE id=1`,n);return reply(env,id,'Принял: '+(goal[1]==='цель'?'цель ':'план на месяц ')+money(n)+'. Кошельки не менял.',now);}catch{return reply(env,id,'Нужна положительная сумма в рублях, например /цель 500000.',now);}}
@@ -94,7 +103,7 @@ async function handleTurn(env,b,now){
  }
  const time=text.match(/^\/время\s+((?:1[0-9]|20):[0-5][0-9])$/);if(time){await run(env,'UPDATE settings SET nudge_time=? WHERE id=1',time[1]);return reply(env,id,'Буду писать в '+time[1]+' МСК по пн/ср/сб.',now);}
  if(text==='/тишина'||text==='/общайся'){await run(env,'UPDATE settings SET proactive=? WHERE id=1',text==='/общайся'?1:0);return reply(env,id,text==='/тишина'?'Хорошо, первым не пишу.':'Хорошо, буду иногда выходить на связь.',now);}
- if(text.startsWith('/память ')){await run(env,'UPDATE settings SET context=? WHERE id=1',text.slice(8).slice(0,1500));return reply(env,id,'Запомнил для следующих разговоров. Посмотреть: /память. Удалить: /забыть.',now);}
+ if(text.startsWith('/память ')){const saved=await appendNote(env,text.slice(8));return reply(env,id,saved?'Добавил заметку, прежние сохранил. Посмотреть: /память.':'Заметки заполнены. Старые сохранил, новую не добавил. Посмотреть: /память.',now);}
  if(text==='/память')return reply(env,id,(await one(env,'SELECT context FROM settings WHERE id=1')).context||'Постоянных заметок пока нет.',now);
  if(text==='/забыть'){await env.DB.batch([q(env,'DELETE FROM memory'),q(env,"UPDATE settings SET context='' WHERE id=1")]);return reply(env,id,'Контекст разговоров и заметка очищены. Журнал денег сохранён.',now);}
  if(text==='📒 История'||text==='/history'){
@@ -110,16 +119,27 @@ async function handleTurn(env,b,now){
  if(text.startsWith('/'))return reply(env,id,help,now);
  if(!text)return reply(env,id,'Пришли текст или голосовое, брат.',now);
  if(text.length>2500)return reply(env,id,'Брат, сократи сообщение до 2500 символов — так надёжнее разберу.',now);
- if(/(?:заплатил|потратил|оплатил|купил|расход)/iu.test(text)&&/(?:баланс|остаток|осталось)/iu.test(text)&&/\d/u.test(text)){
+ const purchase=/(?:заплатил|потратил|оплатил|купил|расход)/iu.test(text)&&/(?:баланс|остаток|осталось|сейчас)/iu.test(text)&&/\d/u.test(text);
+ if(purchase&&/карман/iu.test(text)&&text.search(/заплатил|потратил|оплатил|купил|расход/iu)<text.search(/баланс|остаток|осталось|сейчас/iu)&&!/(?:AZN|манат|Сабунчи|капитал|не покупал|не платил|хочу|получил|заработал)/iu.test(text)){
+  const ns=statedAmounts(text),w=await one(env,"SELECT amount,initialized FROM wallets WHERE wallet='pocket' AND currency='RUB'");
+  if(ns.length===2&&ns[0]>0&&w.initialized&&w.amount-ns[0]===ns[1]&&!/до\s+(?:этой\s+)?(?:покупки|оплаты|обеда|траты|расхода)/iu.test(text))return draft(env,id,[{type:'expense',wallet:'pocket',currency:'RUB',amount:String(ns[0]/100),note:'Расход со сверкой остатка'}],now);
+ }
+ if(purchase&&!/(?:до|после)\s+(?:этой\s+)?(?:покупки|оплаты|обеда|траты|расхода)/iu.test(text)){
   const clarification='Брат, названная оставшаяся сумма — уже после этой покупки или ещё до неё? Уточни, чтобы я не вычел расход дважды. Пока ничего не записываю.';
   
   await memory(env,id+':clarify','assistant',clarification,now+1);
   return reply(env,id,clarification,now);
  }
  let result;
- try{result=await brain(env,text==='💬 Поговорим'?'Хочу поговорить. Спроси, как у меня дела.':text,now);}catch(e){
+ try{result=await brain(env,text==='💬 Поговорим'?'Хочу поговорить. Спроси, как у меня дела.':text,now,deadline);}catch(e){
   const reason={brain_budget:'Сегодня исчерпан лимит обращений бота к модели.',brain_rate:'Groq временно ограничил частоту запросов.',brain_timeout:'Модель не успела ответить.',brain_config:'Нет доступа к модели.',brain_invalid:'Модель вернула ответ, который я не смог проверить.'}[e.message]??'Сервис модели сейчас недоступен.';
   return reply(env,id,reason+' Журнал сохранён. Можно открыть «Баланс» или «Историю». Для исправления остатка: /остаток капитал RUB сумма. /help — остальные команды.',now);
+ }
+ // A correction arriving while the model was thinking supersedes this unsent
+ // inference. The durable update will be joined with the new text on the next turn.
+ if(batchable(b)&&(b.regenerations??0)<2&&Date.now()+5000<(deadline??0)){
+  const newer=await one(env,"SELECT payload,created_at FROM updates WHERE state='pending' AND id!=? AND created_at>=? ORDER BY created_at,id LIMIT 1",Number(id),now-4000);
+  if(newer&&newer.created_at-(b.batch_started??now)<=8000&&batchable(JSON.parse(newer.payload))&&text.length+JSON.parse(newer.payload).message.text.length<2400)return {defer:true};
  }
  
  if(result.kind==='proposal')return draft(env,id,result.actions,now);
@@ -129,35 +149,40 @@ async function handleTurn(env,b,now){
   return draft(env,id,null,now,{id:t.id,entries:await all(env,'SELECT wallet,currency,delta FROM entries WHERE tx_id=?',t.id)});
  }
  if(result.kind==='remember'){
-  await run(env,'UPDATE settings SET context=? WHERE id=1',result.reply.slice(0,1000));
-  return reply(env,id,'Запомнил заметку: '+result.reply,now);
+  const saved=await appendNote(env,result.reply);
+  return reply(env,id,saved?'Запомнил заметку: '+result.reply:'Заметки заполнены. Старые сохранил, новую не добавил. Посмотреть: /память.',now);
  }
  if(result.kind==='balance')return reply(env,id,await balanceText(env),now);
  if(result.kind==='status')return reply(env,id,await recordStatus(env,now),now);
  if(result.kind==='history')return handle(env,{update_id:b.update_id,message:{text:'/history'}},now);
  // Only the program may issue a receipt. Ordinary numeric explanations are allowed.
- if(unsafeReply(result.reply)&&!/(?:не |ничего не |пока не )/iu.test(result.reply))return reply(env,id,'Я не менял журнал этим сообщением, брат. Могу посмотреть последние записи или подготовить исправление.',now);
+ if(unsafeReply(result.reply))return reply(env,id,'Я не менял журнал этим сообщением, брат. Могу посмотреть последние записи или подготовить исправление.',now);
  if(result.kind==='clarify')await memory(env,id+':clarify','assistant',result.reply,now+1);
  return reply(env,id,result.reply,now);
 }
-async function handle(env,b,now){
+async function handle(env,b,now,deadline){
  const id=String(b.update_id);
  // Persist the actual dialogue, including tool receipts and button outcomes.
  // No replayed model inference is treated as a ledger fact.
- await handleTurn(env,b,now);
+ // A persisted answer is the result of this update. Never infer another draft on replay.
+ if(!await one(env,'SELECT id FROM outbox WHERE id=?',id)){
+  if(await one(env,'SELECT id FROM drafts WHERE id=?',id))await draft(env,id,null,now);
+  else{const result=await handleTurn(env,b,now,deadline);if(result?.defer)return result;}
+ }
  const text=b.message?.text;
  if(text&&text!=='/забыть')await memory(env,id+':user','user',text,now);
  if(b.callback_query?.data?.match(/^(yes|no):/))await memory(env,id+':user','user',b.callback_query.data.startsWith('yes:')?'Нажата кнопка подтверждения предложения.':'Нажата кнопка отмены предложения.',now);
  const out=await one(env,'SELECT payload FROM outbox WHERE id=?',id);
  if(out&&text!=='/забыть'&&!await one(env,'SELECT id FROM memory WHERE id=?',id+':clarify'))await memory(env,id+':assistant','assistant',JSON.parse(out.payload).text,now+1);
 }
-export async function sendPending(env,now=Date.now()){
+export async function sendPending(env,now=Date.now(),deadline=Date.now()+23000){
  if(Number((await one(env,'SELECT telegram_pause FROM settings WHERE id=1'))?.telegram_pause)>now)return;
  const token=await lock(env,'send',now,25000);if(!token)return;
  try{
   await run(env,"UPDATE outbox SET state='uncertain' WHERE state='sending' AND lease<=?",now);
   const rows=await all(env,"SELECT * FROM outbox WHERE state='pending' AND due<=? ORDER BY created_at,rowid LIMIT 2",now);
   for(let i=0;i<rows.length;i++){
+   if(Date.now()+8200+(i?1100:0)>deadline)break;
    const m=rows[i],time=Date.now();if(time-m.created_at>3600000){await run(env,"UPDATE outbox SET state='expired' WHERE id=?",m.id);continue;}
    if(i)await sleep(1100);
    const claim=await run(env,"UPDATE outbox SET state='sending',lease=? WHERE id=? AND state='pending' AND due<=?",time+20000,m.id,time);if(!claim.meta.changes)continue;
@@ -169,20 +194,39 @@ export async function sendPending(env,now=Date.now()){
  }finally{await unlock(env,'send',token);}
 }
 export async function drain(env,now=Date.now()){
- const token=await lock(env,'dialog',now);if(!token)return;
+ const started=Date.now(),deadline=started+28000,interpretUntil=started+19000;
+ let token;
+ // A concurrent webhook waits for the current turn and takes over instead of
+ // abandoning its update until the next Cron. Every waiter has its own budget.
+ do{token=await lock(env,'dialog',Date.now());if(token)break;await sleep(100);}while(Date.now()<interpretUntil-1000);
+ if(!token)return;
  try{
-  let nextId=null;
-  for(let turn=0;turn<2;turn++){
-  const u=nextId!==null?await one(env,"SELECT * FROM updates WHERE id=? AND state='pending'",nextId):await one(env,"SELECT * FROM updates WHERE state='pending' OR state='processing' AND lease<=? ORDER BY created_at,id LIMIT 1",now);
-  if(u){await run(env,"UPDATE updates SET state='processing',lease=? WHERE id=?",now+55000,u.id);
-   try{await handle(env,JSON.parse(u.payload),now);await run(env,"UPDATE updates SET state='done',payload='{}' WHERE id=?",u.id);}
-   catch{await reply(env,u.id,'Не удалось закончить запрос, брат. Проверь баланс перед повторной записью; подтверждённый журнал сохранён.',now);await run(env,"UPDATE updates SET state='failed',payload='{}' WHERE id=?",u.id);}
-  }
-  if(!u||!JSON.parse(u.payload).callback_query?.data?.startsWith('hear:'))break;
-  nextId=-Math.abs(Number(u.id));
+  for(let turn=0;turn<8&&Date.now()<interpretUntil-1000;turn++){
+   const clock=now+Date.now()-started;
+   const u=await one(env,"SELECT * FROM updates WHERE state='pending' OR state='processing' AND lease<=? ORDER BY created_at,id LIMIT 1",clock);
+   if(!u)break;
+   let body=JSON.parse(u.payload);body.batch_started=u.created_at;
+   if(batchable(body)&&!await one(env,'SELECT id FROM outbox WHERE id=?',String(u.id))){
+    const waiting=await all(env,"SELECT id,payload,created_at FROM updates WHERE state='pending' AND id!=? AND created_at>=? ORDER BY created_at,id LIMIT 4",u.id,u.created_at);
+    const ids=[];for(const next of waiting){
+     const candidate=JSON.parse(next.payload);
+     if(next.created_at-u.created_at>8000||!batchable(candidate)||body.message.text.length+candidate.message.text.length>2400)break;
+     body.message.text+='\n'+candidate.message.text;ids.push(next.id);
+    }
+    if(ids.length){body.coalesced_ids=[...(body.coalesced_ids??[]),...ids];await env.DB.batch([
+     q(env,'UPDATE updates SET payload=? WHERE id=?',JSON.stringify(body),u.id),
+     ...ids.map(id=>q(env,"UPDATE updates SET state='done',payload='{}' WHERE id=? AND state='pending'",id))
+    ]);}
+   }
+   await run(env,"UPDATE updates SET state='processing',lease=? WHERE id=?",clock+55000,u.id);
+   try{const result=await handle(env,body,clock,interpretUntil);
+    if(result?.defer){body.regenerations=(body.regenerations??0)+1;await run(env,"UPDATE updates SET state='pending',payload=? WHERE id=?",JSON.stringify(body),u.id);continue;}
+    await run(env,"UPDATE updates SET state='done',payload='{}' WHERE id=?",u.id);
+   }
+   catch{await reply(env,u.id,'Не удалось закончить запрос, брат. Проверь баланс перед повторной записью; подтверждённый журнал сохранён.',clock);await run(env,"UPDATE updates SET state='failed',payload='{}' WHERE id=?",u.id);}
   }
  }finally{await unlock(env,'dialog',token);}
- await sendPending(env);
+ await sendPending(env,Date.now(),deadline);
 }
 export async function nudge(env,now=Date.now()){
  const s=await one(env,'SELECT * FROM settings WHERE id=1');
@@ -202,7 +246,7 @@ export default {
  async fetch(req,env,ctx){
   try{
    const u=new URL(req.url);
-   if(u.pathname==='/health')return json({ok:true,version:'2.0.0',agent_tools:true,voice:true,sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
+   if(u.pathname==='/health')return json({ok:true,version:'2.1.0',agent_tools:true,voice:true,sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
    if(u.pathname==='/telegram'&&req.method==='POST'){
     if(env.ENABLED!=='true'||!await equal(req.headers.get('X-Telegram-Bot-Api-Secret-Token'),env.WEBHOOK_SECRET))return json({ok:false},403);
     if(Number(req.headers.get('content-length'))>16384)return json({ok:false},413);

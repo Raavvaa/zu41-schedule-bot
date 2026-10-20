@@ -8,14 +8,14 @@ repository only to reuse its authorized deployment Secrets.
 - Owner-only private chat; ID from Secret, never source or model context.
 - Two wallets, RUB/AZN separated, exact integer minor units and explicit opening
   balances. No starting financial figures or exchange rate assumptions are seeded.
-- Natural Russian/slang via Groq `openai/gpt-oss-20b`, maximum 60 calls/day.
+- Natural Russian/slang via Groq `openai/gpt-oss-120b`, maximum 200 calls/day.
 - Model proposes only. Every ledger write needs a private Telegram confirmation;
   capital withdrawals have a separate explicit warning. Wishes never debit money.
 - Atomic D1 batch, revision guard, expiring drafts, immutable transaction/entry
   journal, undo via reversal. Concurrent confirmations cannot spend twice.
-- Balance/history/commands remain usable without Groq. Memory retains eight recent
+- Balance/history/commands remain usable without Groq. Memory retains 24 recent
   messages in context, removes conversation history after 30 days; /память stores
-  an explicit note, /забыть clears conversational context, not accounting records.
+  bounded append-only notes (existing notes are not silently discarded), /забыть clears conversational context, not accounting records.
 - Optional proactive support Monday/Wednesday/Saturday at 19:00 Moscow, one/day,
   15-minute delivery window, no night or catch-up messages. /settings, /тишина,
   /общайся, /время allow changes. Religion toggle; no generated scriptural quotes.
@@ -60,6 +60,36 @@ No external skill gets credentials or ledger write permissions. “Skills” her
 
 ## Agent runtime v2
 
-Groq uses named tools for ledger reads, memory search, proposals, balance corrections and reversals. Financial writes remain in the deterministic ledger and require a one-use confirmation. New proposals supersede old drafts. Conversation memory includes native confirmations and cancellations; unknown balances remain unknown. No shell, arbitrary SQL, browser or URL tool is exposed to the model. Model: openai/gpt-oss-120b, bounded to three rounds and 200 calls/day; provider limits also apply.
+Groq uses named tools for ledger reads, memory search, proposals, balance corrections and reversals. Financial writes remain in the deterministic ledger and require a one-use confirmation. New proposals supersede old drafts. Conversation memory includes native confirmations and cancellations; unknown balances remain unknown. No shell, arbitrary SQL, browser or URL tool is exposed to the model. Model: openai/gpt-oss-120b, bounded to four rounds and 200 calls/day; provider limits also apply.
 
 Validation: isolated D1 tests and real-model dialogue gate precede deployment. Live verification sends read-only owner messages. These checks reduce regressions, but do not guarantee perfect interpretation of arbitrary conversation.
+
+
+## Release 1: dialogue reliability (2.1)
+
+- Major units for model-visible wallets, goal, monthly plan and remaining goal.
+- Income with “сейчас” and split “остаток себе” reach financial interpretation.
+  Explicit corrections remain distinct from income; numeric-only proposals must
+  use amounts stated in the current message or its explicit clarification.
+- Existing 1–4 actions and atomic revision-guarded ledger batch are retained.
+  Every affected wallet now has a deterministic before/after preview.
+- Compatible pending text bursts (up to 4 following texts, 2400 characters,
+  8-second window) are durably combined. A correction arriving during inference
+  can replace an unsent result, at most twice and within the runtime budget.
+  Commands, receipt inquiries and callbacks are boundaries, never merged.
+- Bounded drain processes multiple updates; concurrent webhook handlers wait for
+  the dialogue lock. Cron remains the recovery path when the budget is exhausted.
+- Stored draft/outbox wins on retry; no new interpretation replaces its card.
+- Cancel results contain fresh state. Repeated tool calls stop. Receipt negation
+  is scoped to the verb, so “Записал, не переживай” is not accepted as a receipt.
+- Notes append/deduplicate up to 1500 characters; overflow leaves prior notes intact.
+
+This is the first release, not the whole proposed roadmap. Structured facts,
+transaction amendment, topic-aware text confirmation, daily summaries and
+single-card voice input are not enabled. Voice still has preview acceptance and
+financial confirmation. A stronger agent prompt alone does not guarantee correct
+interpretation; cards still require explicit approval.
+
+Rollback: pin the deploy/brat-accountant workflow to
+`af9702d1f2833c5400c826416130775b538efada`, run its verification/deployment gate and
+check /health SHA. No schema migration or production balance seeding is used here.
