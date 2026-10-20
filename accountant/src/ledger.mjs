@@ -2,6 +2,17 @@ export const q=(env,s,...args)=>env.DB.prepare(s).bind(...args);
 export const one=(env,s,...args)=>q(env,s,...args).first();
 export const run=(env,s,...args)=>q(env,s,...args).run();
 export const all=async(env,s,...args)=>(await q(env,s,...args).all()).results;
+// Invocation-local meter: count statements conservatively, even inside batch.
+// Reserve five calls for durable requeue/unlock after an exhausted turn.
+export function consumeRequest(env,n=1){const b=env.REQUEST_BUDGET;if(b){if(b.used+n>48-b.reserve)throw Error('request_budget');b.used+=n;}}
+export const requestRemaining=env=>env.REQUEST_BUDGET?48-env.REQUEST_BUDGET.reserve-env.REQUEST_BUDGET.used:Infinity;
+export function requestEnv(env){
+ if(env.REQUEST_BUDGET)return env;
+ const scoped={...env,REQUEST_BUDGET:{used:0,reserve:5}},raw=env.DB;
+ const wrap=statement=>({rawStatement:statement,bind(...args){return wrap(statement.bind(...args));},first(...args){consumeRequest(scoped);return statement.first(...args);},all(...args){consumeRequest(scoped);return statement.all(...args);},run(...args){consumeRequest(scoped);return statement.run(...args);}});
+ scoped.DB={prepare(sql){return wrap(raw.prepare(sql));},batch(statements){consumeRequest(scoped,statements.length);return raw.batch(statements.map(s=>s.rawStatement??s));}};
+ return scoped;
+}
 export const money=(n,c='RUB')=>(n/100).toLocaleString('ru-RU',{maximumFractionDigits:2})+' '+(c==='RUB'?'₽':'AZN');
 export function amount(value){
  const t=String(value).trim().replace(/\s/g,'').replace(',','.');

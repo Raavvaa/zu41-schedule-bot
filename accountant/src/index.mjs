@@ -1,4 +1,4 @@
-import {q,one,all,run,amount,money,validate,propose,apply,balances,balanceText,draftText,walletName} from './ledger.mjs';
+import {q,one,all,run,amount,money,validate,propose,apply,balances,balanceText,draftText,walletName,requestEnv,requestRemaining,consumeRequest} from './ledger.mjs';
 import {brain,unsafeReply,statedAmounts} from './brain.mjs';
 import {transcribe,voiceError} from './voice.mjs';
 const json=(v,status=200)=>Response.json(v,{status});
@@ -10,7 +10,7 @@ async function equal(a,b){if(!a||!b)return false;const hash=x=>crypto.subtle.dig
 export function owner(env,b){const m=b.message??b.callback_query?.message,from=b.message?.from??b.callback_query?.from;const id=String(env.OWNER_CHAT_ID??'');return /^[1-9]\d*$/.test(id)&&Number.isSafeInteger(Number(id))&&m?.chat?.type==='private'&&String(m.chat.id)===id&&String(from?.id)===id;}
 async function lock(env,name,now,ttl=55000){const token=crypto.randomUUID();const r=await run(env,'INSERT INTO locks VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET token=excluded.token,expires=excluded.expires WHERE expires<=?',name,token,now+ttl,now);return r.meta.changes?token:null;}
 async function unlock(env,name,token){await run(env,'DELETE FROM locks WHERE name=? AND token=?',name,token);}
-async function tg(env,method,body){try{const r=await fetch('https://api.telegram.org/bot'+env.TELEGRAM_BOT_TOKEN+'/'+method,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(8000)});const d=await r.json();return {ok:d.ok===true,id:d.result?.message_id,error:d.error_code??r.status,retry:Math.max(1,Number(d.parameters?.retry_after)||30)};}catch{return {ok:false,error:'uncertain'};}}
+async function tg(env,method,body){consumeRequest(env);try{const r=await fetch('https://api.telegram.org/bot'+env.TELEGRAM_BOT_TOKEN+'/'+method,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(8000)});const d=await r.json();return {ok:d.ok===true,id:d.result?.message_id,error:d.error_code??r.status,retry:Math.max(1,Number(d.parameters?.retry_after)||30)};}catch{return {ok:false,error:'uncertain'};}}
 async function reply(env,id,text,now,markup=menu){await run(env,'INSERT OR IGNORE INTO outbox(id,payload,due,created_at) VALUES(?,?,?,?)',String(id),JSON.stringify({text:String(text).slice(0,3900),...(markup?{reply_markup:markup}:{}),link_preview_options:{is_disabled:true}}),now,now);}
 async function memory(env,id,role,content,now){await run(env,'INSERT OR IGNORE INTO memory VALUES(?,?,?,?)',id,role,content.slice(0,2500),now);}
 async function appendNote(env,note){
@@ -25,7 +25,7 @@ async function draft(env,id,actions,now,reversal=null){
  try{
   const p=await propose(env,id,actions,now,reversal);const protectedCapital=p.entries.some(x=>x.wallet==='capital'&&x.delta<0)&&!p.actions?.every(a=>a.type==='opening');
   return reply(env,id,(protectedCapital?'⚠️ Брат, это уменьшит капитал Сабунчи. Если трата уже была, учтём честно.\n\n':'')+draftText(p),now,{inline_keyboard:[[{text:protectedCapital?'⚠️ Подтверждаю снятие капитала':'✅ Записать',callback_data:'yes:'+id}],[{text:'❌ Отмена',callback_data:'no:'+id}]]});
- }catch(e){return reply(env,id,e.message==='unchanged'?'Этот остаток уже сохранён, брат. Повторная запись не нужна.':e.message==='insufficient'?'Брат, по записям в кошельке не хватает денег. Если остаток неверный — напиши «/остаток карманные RUB 5000» с реальной суммой.':e.message==='uninitialized'?'Сначала подтвердим остатки, брат. Пример: /остаток карманные RUB 5000\nДля капитала: /остаток капитал RUB 100000\nЭто примеры формата, не запись денег.':'Не смог надёжно разобрать сумму и кошелёк. Напиши проще: /доход карманные RUB 3500 смена',now);}
+ }catch(e){if(e.message==='request_budget')throw e;return reply(env,id,e.message==='unchanged'?'Этот остаток уже сохранён, брат. Повторная запись не нужна.':e.message==='insufficient'?'Брат, по записям в кошельке не хватает денег. Если остаток неверный — напиши «/остаток карманные RUB 5000» с реальной суммой.':e.message==='uninitialized'?'Сначала подтвердим остатки, брат. Пример: /остаток карманные RUB 5000\nДля капитала: /остаток капитал RUB 100000\nЭто примеры формата, не запись денег.':'Не смог надёжно разобрать сумму и кошелёк. Напиши проще: /доход карманные RUB 3500 смена',now);}
 }
 function localAction(t){
  const m=t.match(/^\/(доход|расход|остаток|перевод)\s+(капитал|карманные)\s+(RUB|AZN)\s+(\d+(?:[.,]\d{1,2})?)(?:\s+(.*))?$/i);if(!m)return null;
@@ -85,7 +85,7 @@ async function handleTurn(env,b,now,deadline){
   const prior=await one(env,'SELECT text,state FROM voice_inputs WHERE id=?',id);
   if(prior&&prior.state!=='ready')return;
   let heard=prior?.text;
-  if(!heard){try{heard=await transcribe(env,b.message.voice,now);}catch(e){return reply(env,id,voiceError(e),now);}
+  if(!heard){try{heard=await transcribe(env,b.message.voice,now);}catch(e){if(e.message==='request_budget')throw e;return reply(env,id,voiceError(e),now);}
    await run(env,"INSERT OR IGNORE INTO voice_inputs(id,text,expires) VALUES(?,?,?)",id,heard,now+15*60000);
   }
   return reply(env,id,'🎙 Я услышал:\n'+heard+'\n\nПроверь слова и суммы. Передать на разбор? Пока ничего не записано. Голос распознаёт Groq.',now,{inline_keyboard:[[{text:'✅ Разобрать',callback_data:'hear:'+id}],[{text:'❌ Не так / отмена',callback_data:'discard:'+id}]]});
@@ -132,6 +132,7 @@ async function handleTurn(env,b,now,deadline){
  }
  let result;
  try{result=await brain(env,text==='💬 Поговорим'?'Хочу поговорить. Спроси, как у меня дела.':text,now,deadline);}catch(e){
+  if(e.message==='request_budget')throw e;
   const reason={brain_budget:'Сегодня исчерпан лимит обращений бота к модели.',brain_rate:'Groq временно ограничил частоту запросов.',brain_timeout:'Модель не успела ответить.',brain_config:'Нет доступа к модели.',brain_invalid:'Модель вернула ответ, который я не смог проверить.'}[e.message]??'Сервис модели сейчас недоступен.';
   return reply(env,id,reason+' Журнал сохранён. Можно открыть «Баланс» или «Историю». Для исправления остатка: /остаток капитал RUB сумма. /help — остальные команды.',now);
  }
@@ -176,13 +177,14 @@ async function handle(env,b,now,deadline){
  if(out&&text!=='/забыть'&&!await one(env,'SELECT id FROM memory WHERE id=?',id+':clarify'))await memory(env,id+':assistant','assistant',JSON.parse(out.payload).text,now+1);
 }
 export async function sendPending(env,now=Date.now(),deadline=Date.now()+23000){
+ if(requestRemaining(env)<9)return;
  if(Number((await one(env,'SELECT telegram_pause FROM settings WHERE id=1'))?.telegram_pause)>now)return;
  const token=await lock(env,'send',now,25000);if(!token)return;
  try{
   await run(env,"UPDATE outbox SET state='uncertain' WHERE state='sending' AND lease<=?",now);
   const rows=await all(env,"SELECT * FROM outbox WHERE state='pending' AND due<=? ORDER BY created_at,rowid LIMIT 2",now);
   for(let i=0;i<rows.length;i++){
-   if(Date.now()+8200+(i?1100:0)>deadline)break;
+   if(Date.now()+8200+(i?1100:0)>deadline||requestRemaining(env)<5)break;
    const m=rows[i],time=Date.now();if(time-m.created_at>3600000){await run(env,"UPDATE outbox SET state='expired' WHERE id=?",m.id);continue;}
    if(i)await sleep(1100);
    const claim=await run(env,"UPDATE outbox SET state='sending',lease=? WHERE id=? AND state='pending' AND due<=?",time+20000,m.id,time);if(!claim.meta.changes)continue;
@@ -194,14 +196,15 @@ export async function sendPending(env,now=Date.now(),deadline=Date.now()+23000){
  }finally{await unlock(env,'send',token);}
 }
 export async function drain(env,now=Date.now()){
+ env=requestEnv(env);
  const started=Date.now(),deadline=started+28000,interpretUntil=started+19000;
  let token;
  // A concurrent webhook waits for the current turn and takes over instead of
  // abandoning its update until the next Cron. Every waiter has its own budget.
- do{token=await lock(env,'dialog',Date.now());if(token)break;await sleep(100);}while(Date.now()<interpretUntil-1000);
+ for(let attempt=0;attempt<4&&Date.now()<interpretUntil-1000;attempt++){token=await lock(env,'dialog',Date.now());if(token)break;await sleep(1000*2**attempt);}
  if(!token)return;
  try{
-  for(let turn=0;turn<8&&Date.now()<interpretUntil-1000;turn++){
+  for(let turn=0;turn<8&&Date.now()<interpretUntil-1000&&requestRemaining(env)>=16;turn++){
    const clock=now+Date.now()-started;
    const u=await one(env,"SELECT * FROM updates WHERE state='pending' OR state='processing' AND lease<=? ORDER BY created_at,id LIMIT 1",clock);
    if(!u)break;
@@ -223,9 +226,9 @@ export async function drain(env,now=Date.now()){
     if(result?.defer){body.regenerations=(body.regenerations??0)+1;await run(env,"UPDATE updates SET state='pending',payload=? WHERE id=?",JSON.stringify(body),u.id);continue;}
     await run(env,"UPDATE updates SET state='done',payload='{}' WHERE id=?",u.id);
    }
-   catch{await reply(env,u.id,'Не удалось закончить запрос, брат. Проверь баланс перед повторной записью; подтверждённый журнал сохранён.',clock);await run(env,"UPDATE updates SET state='failed',payload='{}' WHERE id=?",u.id);}
+   catch(e){if(e.message==='request_budget'){env.REQUEST_BUDGET.reserve=0;await run(env,"UPDATE updates SET state='pending' WHERE id=?",u.id);break;}await reply(env,u.id,'Не удалось закончить запрос, брат. Проверь баланс перед повторной записью; подтверждённый журнал сохранён.',clock);await run(env,"UPDATE updates SET state='failed',payload='{}' WHERE id=?",u.id);}
   }
- }finally{await unlock(env,'dialog',token);}
+ }finally{env.REQUEST_BUDGET.reserve=0;await unlock(env,'dialog',token);}
  await sendPending(env,Date.now(),deadline);
 }
 export async function nudge(env,now=Date.now()){
@@ -244,6 +247,7 @@ export async function nudge(env,now=Date.now()){
 }
 export default {
  async fetch(req,env,ctx){
+  env=requestEnv(env);
   try{
    const u=new URL(req.url);
    if(u.pathname==='/health')return json({ok:true,version:'2.1.0',agent_tools:true,voice:true,sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
@@ -254,7 +258,7 @@ export default {
     if(!owner(env,b)||!Number.isSafeInteger(b.update_id))return json({ok:true});
     // Persist the owner update before acknowledgement; Cron recovers interruption.
     await run(env,'INSERT OR IGNORE INTO updates(id,payload,created_at) VALUES(?,?,?)',b.update_id,JSON.stringify(b),Date.now());
-    ctx.waitUntil(drain(env).catch(()=>{}));return json({ok:true});
+    ctx.waitUntil((async()=>{const start=Date.now();await drain(env);console.log(JSON.stringify({event:'dialog_drain',duration_ms:Date.now()-start,request_units:env.REQUEST_BUDGET.used}));})().catch(()=>{}));return json({ok:true});
    }
    if(u.pathname==='/ops/probe'&&req.method==='POST'&&env.ADMIN_SECRET&&await equal(req.headers.get('Authorization'),'Bearer '+env.ADMIN_SECRET)){
     const result=await brain(env,'Сегодня заработал 4500 рублей. Из них 3000 рублей в капитал Сабунчи, остальные 1500 рублей в карманные. Предложи запись дохода и перевода, а не начальные остатки.',Date.now());const a=validate(result.actions);return json({ok:result.kind==='proposal'&&a.length===2&&a.some(x=>x.type==='income'&&x.wallet==='pocket'&&x.amount===450000&&x.currency==='RUB')&&a.some(x=>x.type==='transfer'&&x.wallet==='pocket'&&x.to==='capital'&&x.amount===300000&&x.currency==='RUB'),model:env.GROQ_MODEL,slang_parse:true});
@@ -262,5 +266,5 @@ export default {
    return json({ok:false},404);
   }catch{return json({ok:false},503);}
  },
- async scheduled(event,env,ctx){if(env.ENABLED==='true')ctx.waitUntil((async()=>{await drain(env);await nudge(env);await sendPending(env);const now=Date.now();await env.DB.batch([q(env,'DELETE FROM voice_inputs WHERE expires<?',now),q(env,'DELETE FROM memory WHERE at<?',now-30*86400000),q(env,"DELETE FROM updates WHERE state IN ('done','failed') AND created_at<?",now-30*86400000),q(env,"DELETE FROM drafts WHERE state!='ready' AND created_at<?",now-30*86400000)]);})());}
+ async scheduled(event,env,ctx){env=requestEnv(env);if(env.ENABLED==='true')ctx.waitUntil((async()=>{await drain(env);if(requestRemaining(env)<20)return;await nudge(env);await sendPending(env);const now=Date.now();await env.DB.batch([q(env,'DELETE FROM voice_inputs WHERE expires<?',now),q(env,'DELETE FROM memory WHERE at<?',now-30*86400000),q(env,"DELETE FROM updates WHERE state IN ('done','failed') AND created_at<?",now-30*86400000),q(env,"DELETE FROM drafts WHERE state!='ready' AND created_at<?",now-30*86400000)]);})());}
 };

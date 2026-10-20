@@ -268,3 +268,16 @@ test('reversed order of balance and purchase cannot swap their amounts',async()=
  const open=seq;await text('/остаток карманные RUB 5129');await callback('yes:'+open);
  modelResult={kind:'clarify',reply:'Уточню покупку.',actions:[]};const id=seq;await text('Сейчас в карманных 4779, заплатил 350 рублей за обед');assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(id)).first(),null);
 });
+
+test('query budget yields durable work instead of exceeding the free invocation limit',async()=>{
+ await db.prepare('DELETE FROM updates').run();await db.prepare('DELETE FROM outbox').run();await db.prepare('DELETE FROM locks').run();
+ const clock=Date.now();for(let i=0;i<8;i++){const id=seq++;await db.prepare('INSERT INTO updates(id,payload,created_at) VALUES(?,?,?)').bind(id,JSON.stringify({update_id:id,message:{text:'/balance'}}),clock+i).run();}
+ const first=await call('/test/drain',{now:clock});assert.ok(first.requests<=48);assert.ok((await db.prepare("SELECT count(*) n FROM updates WHERE state='pending'").first()).n>0);
+ for(let i=0;i<8;i++){const r=await call('/test/drain',{now:Date.now()});assert.ok(r.requests<=48);}
+ assert.equal((await db.prepare("SELECT count(*) n FROM updates WHERE state!='done'").first()).n,0);assert.equal((await db.prepare("SELECT count(*) n FROM outbox WHERE state='sent'").first()).n,8);
+});
+test('crash after draft creation replays its exact card without model reinference',async()=>{
+ const id=seq++;const initial=await proposal(String(id),[action('income','pocket',250)]),calls=groqCalls;
+ await db.prepare('INSERT INTO updates(id,payload,created_at) VALUES(?,?,?)').bind(id,JSON.stringify({update_id:id,message:{text:'получил 250 рублей в карманные'}}),Date.now()).run();
+ modelResult={plain:'Совсем другой ответ'};await call('/test/drain',{now:Date.now()});assert.equal(groqCalls,calls);assert.deepEqual(JSON.parse((await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(id)).first()).payload),initial);assert.match(sends.at(-1).text,/250/);
+});

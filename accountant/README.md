@@ -78,7 +78,11 @@ Validation: isolated D1 tests and real-model dialogue gate precede deployment. L
   can replace an unsent result, at most twice and within the runtime budget.
   Commands, receipt inquiries and callbacks are boundaries, never merged.
 - Bounded drain processes multiple updates; concurrent webhook handlers wait for
-  the dialogue lock. Cron remains the recovery path when the budget is exhausted.
+  the dialogue lock. Cron remains the recovery path when the budget is exhausted. An invocation-local
+  meter counts D1 statements and outbound calls, reserving cleanup capacity below
+  the free limit; lock contention uses at most four attempts, not busy polling.
+  The model snapshot is fetched in a single SQL statement. Budget exhaustion
+  durably requeues unfinished work instead of discarding it.
 - Stored draft/outbox wins on retry; no new interpretation replaces its card.
 - Cancel results contain fresh state. Repeated tool calls stop. Receipt negation
   is scoped to the verb, so “Записал, не переживай” is not accepted as a receipt.
