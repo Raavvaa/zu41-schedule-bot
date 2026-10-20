@@ -39,8 +39,10 @@ export async function propose(env,id,raw,now,reversal=null){
   if(!w||!Number.isSafeInteger(d.delta)||w.amount+d.delta<0)throw Error('insufficient');
   if(!reversal&&actions.every(a=>a.type!=='opening')&&!w.initialized)throw Error('uninitialized');
  }
- const payload={actions,entries:ds,reversal_of:reversal?.id??null};
- await run(env,'INSERT OR IGNORE INTO drafts(id,payload,revision,created_at,expires_at) VALUES(?,?,?,?,?)',id,JSON.stringify(payload),s.revision,now,now+15*60000);
+ const payload={actions,entries:ds,before:ws.map(w=>({wallet:w.wallet,currency:w.currency,amount:w.initialized?w.amount:null})),reversal_of:reversal?.id??null};
+ await env.DB.batch([
+ q(env,"UPDATE drafts SET state='cancelled' WHERE state='ready' AND id!=? AND NOT EXISTS(SELECT 1 FROM drafts WHERE id=?)",id,id),
+ q(env,'INSERT OR IGNORE INTO drafts(id,payload,revision,created_at,expires_at) VALUES(?,?,?,?,?)',id,JSON.stringify(payload),s.revision,now,now+15*60000)]);
  return payload;
 }
 export async function apply(env,id,now){
@@ -66,4 +68,10 @@ export async function balanceText(env){
  if(s.goal&&capital.initialized)text+='\n\n🎯 До цели: '+money(Math.max(0,s.goal-capital.amount))+' · '+Math.min(100,Math.floor(capital.amount/s.goal*100))+'%';
  return text;
 }
-export function draftText(p){return (p.reversal_of?'Отменить прошлую запись?':p.actions.map(a=>`${a.type==='income'?'+':a.type==='expense'?'−':a.type==='opening'?'Остаток =':'Перевод'} ${money(a.amount,a.currency)} · ${walletName(a.wallet)}${a.to?' → '+walletName(a.to):''}${a.note?' · '+a.note:''}`).join('\n'))+'\n\nПока ничего не записано. Всё верно?';}
+export function draftText(p){
+ const text=p.reversal_of?'Отменить последнюю запись отдельной корректировкой? История сохранится.':p.actions.map(a=>{
+ const before=p.before?.find(w=>w.wallet===a.wallet&&w.currency===a.currency)?.amount;
+ if(a.type==='opening')return `${walletName(a.wallet)}: ${before==null?'остаток неизвестен':money(before,a.currency)} → ${money(a.amount,a.currency)}\nЭто установка правильного остатка, не новый доход.`;
+ return `${a.type==='income'?'+':a.type==='expense'?'−':'Перевод'} ${money(a.amount,a.currency)} · ${walletName(a.wallet)}${a.to?' → '+walletName(a.to):''}${a.note?' · '+a.note:''}`;
+ }).join('\n');return text+'\n\nПока ничего не записано. Всё верно?';
+}

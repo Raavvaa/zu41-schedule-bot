@@ -18,7 +18,7 @@ const hookSecret=createHmac('sha256',e.ADMIN_SECRET).update('sabunchi-webhook:'+
 const adminSecret=createHmac('sha256',e.ADMIN_SECRET).update('sabunchi-ops:'+bot.result.id).digest('hex');
 const models=await req('https://api.groq.com/openai/v1/models',{token:e.GROQ_API_KEY});
 if(!models.data.some(x=>x.id==='whisper-large-v3-turbo'))throw Error('Speech model unavailable');
-if(!models.data.some(x=>x.id==='openai/gpt-oss-20b'))throw Error('Selected Groq model unavailable');
+if(!models.data.some(x=>x.id==='openai/gpt-oss-120b'))throw Error('Selected Groq model unavailable');
 let db=(await cf('/d1/database')).find(x=>x.name===name);
 if(!db)db=await cf('/d1/database','POST',{name});
 const sql=async(s,params=[])=>{const r=await cf('/d1/database/'+db.uuid+'/query','POST',{sql:s,params});return r[0].results;};

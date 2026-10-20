@@ -14,7 +14,7 @@ async function reply(env,id,text,now,markup=menu){await run(env,'INSERT OR IGNOR
 async function memory(env,id,role,content,now){await run(env,'INSERT OR IGNORE INTO memory VALUES(?,?,?,?)',id,role,content.slice(0,2500),now);}
 async function draft(env,id,actions,now,reversal=null){
  try{
-  const p=await propose(env,id,actions,now,reversal);const protectedCapital=p.entries.some(x=>x.wallet==='capital'&&x.delta<0);
+  const p=await propose(env,id,actions,now,reversal);const protectedCapital=p.entries.some(x=>x.wallet==='capital'&&x.delta<0)&&!p.actions?.every(a=>a.type==='opening');
   return reply(env,id,(protectedCapital?'⚠️ Брат, это уменьшит капитал Сабунчи. Если трата уже была, учтём честно.\n\n':'')+draftText(p),now,{inline_keyboard:[[{text:protectedCapital?'⚠️ Подтверждаю снятие капитала':'✅ Записать',callback_data:'yes:'+id}],[{text:'❌ Отмена',callback_data:'no:'+id}]]});
  }catch(e){return reply(env,id,e.message==='unchanged'?'Этот остаток уже сохранён, брат. Повторная запись не нужна.':e.message==='insufficient'?'Брат, по записям в кошельке не хватает денег. Если остаток неверный — напиши «/остаток карманные RUB 5000» с реальной суммой.':e.message==='uninitialized'?'Сначала подтвердим остатки, брат. Пример: /остаток карманные RUB 5000\nДля капитала: /остаток капитал RUB 100000\nЭто примеры формата, не запись денег.':'Не смог надёжно разобрать сумму и кошелёк. Напиши проще: /доход карманные RUB 3500 смена',now);}
 }
@@ -42,7 +42,7 @@ async function recordStatus(env,now){
  else if(await one(env,'SELECT id FROM transactions LIMIT 1'))status='В журнале есть подтверждённые записи. Текущие остатки — ниже.';
  return status+'\n\n'+await balanceText(env);
 }
-async function handle(env,b,now){
+async function handleTurn(env,b,now){
  const id=String(b.update_id),text=(b.message?.text??'').trim(),cb=b.callback_query?.data;
  await run(env,'UPDATE settings SET last_seen=?,active=1 WHERE id=1',now);
  if(cb){
@@ -112,22 +112,44 @@ async function handle(env,b,now){
  if(text.length>2500)return reply(env,id,'Брат, сократи сообщение до 2500 символов — так надёжнее разберу.',now);
  if(/(?:заплатил|потратил|оплатил|купил|расход)/iu.test(text)&&/(?:баланс|остаток|осталось)/iu.test(text)&&/\d/u.test(text)){
   const clarification='Брат, названная оставшаяся сумма — уже после этой покупки или ещё до неё? Уточни, чтобы я не вычел расход дважды. Пока ничего не записываю.';
-  await memory(env,id+':user','user',text,now);
+  
   await memory(env,id+':clarify','assistant',clarification,now+1);
   return reply(env,id,clarification,now);
  }
  let result;
- try{result=await brain(env,text==='💬 Поговорим'?'Хочу поговорить. Спроси, как у меня дела.':text,now);}catch{return reply(env,id,'Брат, Groq сейчас недоступен или закончился дневной лимит. Деньги не потерялись: «Баланс», история и команды записи работают.\n\n'+help,now);}
- await memory(env,id+':user','user',text,now);
+ try{result=await brain(env,text==='💬 Поговорим'?'Хочу поговорить. Спроси, как у меня дела.':text,now);}catch(e){
+  const reason={brain_budget:'Сегодня исчерпан лимит обращений бота к модели.',brain_rate:'Groq временно ограничил частоту запросов.',brain_timeout:'Модель не успела ответить.',brain_config:'Нет доступа к модели.',brain_invalid:'Модель вернула ответ, который я не смог проверить.'}[e.message]??'Сервис модели сейчас недоступен.';
+  return reply(env,id,reason+' Журнал сохранён. Можно открыть «Баланс» или «Историю». Для исправления остатка: /остаток капитал RUB сумма. /help — остальные команды.',now);
+ }
+ 
  if(result.kind==='proposal')return draft(env,id,result.actions,now);
+ if(result.kind==='undo'){
+  const t=await one(env,'SELECT * FROM transactions t WHERE reversal_of IS NULL AND NOT EXISTS(SELECT 1 FROM transactions r WHERE r.reversal_of=t.id) ORDER BY at DESC,rowid DESC LIMIT 1');
+  if(!t)return reply(env,id,'В журнале пока нет записи для отмены.',now);
+  return draft(env,id,null,now,{id:t.id,entries:await all(env,'SELECT wallet,currency,delta FROM entries WHERE tx_id=?',t.id)});
+ }
+ if(result.kind==='remember'){
+  await run(env,'UPDATE settings SET context=? WHERE id=1',result.reply.slice(0,1000));
+  return reply(env,id,'Запомнил заметку: '+result.reply,now);
+ }
  if(result.kind==='balance')return reply(env,id,await balanceText(env),now);
  if(result.kind==='status')return reply(env,id,await recordStatus(env,now),now);
  if(result.kind==='history')return handle(env,{update_id:b.update_id,message:{text:'/history'}},now);
- // Never echo model-generated monetary facts or success claims into the chat/memory.
- if(result.kind==='wish'&&unsafeReply(result.reply))return reply(env,id,'Брат, это желание, поэтому ничего не списываю. Планируешь взять из карманных или из капитала Сабунчи? Капитал бережём; покупку можно спокойно обдумать.',now);
- if(unsafeReply(result.reply))return reply(env,id,'Брат, уточни: это уже имеющийся остаток, новый доход, расход или пока только план? Для записи нужны сумма, валюта и кошелёк. Пока ничего не изменено.\n\n'+await balanceText(env),now);
- await memory(env,id+(result.kind==='clarify'?':clarify':':assistant'),'assistant',result.reply,now+1);
+ // Only the program may issue a receipt. Ordinary numeric explanations are allowed.
+ if(unsafeReply(result.reply)&&!/(?:не |ничего не |пока не )/iu.test(result.reply))return reply(env,id,'Я не менял журнал этим сообщением, брат. Могу посмотреть последние записи или подготовить исправление.',now);
+ if(result.kind==='clarify')await memory(env,id+':clarify','assistant',result.reply,now+1);
  return reply(env,id,result.reply,now);
+}
+async function handle(env,b,now){
+ const id=String(b.update_id);
+ // Persist the actual dialogue, including tool receipts and button outcomes.
+ // No replayed model inference is treated as a ledger fact.
+ await handleTurn(env,b,now);
+ const text=b.message?.text;
+ if(text&&text!=='/забыть')await memory(env,id+':user','user',text,now);
+ if(b.callback_query?.data?.match(/^(yes|no):/))await memory(env,id+':user','user',b.callback_query.data.startsWith('yes:')?'Нажата кнопка подтверждения предложения.':'Нажата кнопка отмены предложения.',now);
+ const out=await one(env,'SELECT payload FROM outbox WHERE id=?',id);
+ if(out&&text!=='/забыть'&&!await one(env,'SELECT id FROM memory WHERE id=?',id+':clarify'))await memory(env,id+':assistant','assistant',JSON.parse(out.payload).text,now+1);
 }
 export async function sendPending(env,now=Date.now()){
  if(Number((await one(env,'SELECT telegram_pause FROM settings WHERE id=1'))?.telegram_pause)>now)return;
@@ -180,7 +202,7 @@ export default {
  async fetch(req,env,ctx){
   try{
    const u=new URL(req.url);
-   if(u.pathname==='/health')return json({ok:true,version:'1.2.0',voice:true,sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
+   if(u.pathname==='/health')return json({ok:true,version:'2.0.0',agent_tools:true,voice:true,sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
    if(u.pathname==='/telegram'&&req.method==='POST'){
     if(env.ENABLED!=='true'||!await equal(req.headers.get('X-Telegram-Bot-Api-Secret-Token'),env.WEBHOOK_SECRET))return json({ok:false},403);
     if(Number(req.headers.get('content-length'))>16384)return json({ok:false},413);

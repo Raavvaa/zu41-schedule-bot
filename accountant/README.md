@@ -56,3 +56,10 @@ Preview requires explicit “Разобрать” before interpretation. A mone
 - https://console.groq.com/docs/speech-to-text — multipart upload, multilingual Whisper, verbose confidence metadata.
 
 No external skill gets credentials or ledger write permissions. “Skills” here are bounded application capabilities: read journal, propose validated entry, confirm entry, interpret speech. Confirmation and exact arithmetic remain deterministic code.
+
+
+## Agent runtime v2
+
+Groq uses named tools for ledger reads, memory search, proposals, balance corrections and reversals. Financial writes remain in the deterministic ledger and require a one-use confirmation. New proposals supersede old drafts. Conversation memory includes native confirmations and cancellations; unknown balances remain unknown. No shell, arbitrary SQL, browser or URL tool is exposed to the model. Model: openai/gpt-oss-120b, bounded to three rounds and 200 calls/day; provider limits also apply.
+
+Validation: isolated D1 tests and real-model dialogue gate precede deployment. Live verification sends read-only owner messages. These checks reduce regressions, but do not guarantee perfect interpretation of arbitrary conversation.
