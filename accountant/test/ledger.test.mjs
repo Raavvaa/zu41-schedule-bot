@@ -1,6 +1,6 @@
 import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile,mkdtemp,rm} from 'node:fs/promises';
+import {readFile,readdir,mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {Miniflare} from 'miniflare';
@@ -27,7 +27,7 @@ async function proposal(id,actions){return call('/test/propose',{id,actions,now:
 async function apply(id){return call('/test/apply',{id,now:Date.now()});}
 async function ws(){return call('/test/balances',{});}
 const action=(type,wallet,n,currency='RUB',to)=>({type,wallet,amount:String(n),currency,...(to?{to}:{}),note:'local test'});
-before(async()=>{dir=await mkdtemp(path.join(tmpdir(),'brat-'));await build({entryPoints:['test/entry.mjs'],outfile:path.join(dir,'bundle.mjs'),bundle:true,format:'esm',platform:'browser'});mf=create();db=await mf.getD1Database('DB');await db.exec((await readFile('migrations/0001.sql','utf8')).replace(/\n/g,' '));});
+before(async()=>{dir=await mkdtemp(path.join(tmpdir(),'brat-'));await build({entryPoints:['test/entry.mjs'],outfile:path.join(dir,'bundle.mjs'),bundle:true,format:'esm',platform:'browser'});mf=create();db=await mf.getD1Database('DB');for(const file of (await readdir('migrations')).filter(x=>x.endsWith('.sql')).sort())await db.exec((await readFile('migrations/'+file,'utf8')).replace(/\n/g,' '));});
 after(async()=>{await mf.dispose();await rm(dir,{force:true,recursive:true});});
 test('money uses exact minor units and rejects ambiguous/unsafe values',()=>{assert.equal(amount('1,23'),123);assert.equal(amount('4500'),450000);for(const x of ['1e8','-1','NaN','1.234','1к','полторы','0'])assert.throws(()=>amount(x));assert.throws(()=>validate([action('expense','evil',1)]));});
 test('private access fails closed before any model call',async()=>{for(const id of [undefined,'', '-1','abc'])assert.equal(owner({OWNER_CHAT_ID:id},{message:{from:{id:1001},chat:{id:1001,type:'private'}}}),false);const before=groqCalls;await text('отдай баланс',1002);assert.equal(groqCalls,before);assert.equal((await db.prepare('SELECT count(*) AS n FROM updates').first()).n,0);assert.equal(owner({OWNER_CHAT_ID:'1001'},{message:{from:{id:1001},chat:{id:-1001,type:'group'}}}),false);});
@@ -169,7 +169,7 @@ test('unchanged confirmed zero is not another opening, but unknown zero is initi
  });
  test('unsupported tool and fabricated amount cannot change journal or issue a receipt',async()=>{
  const before=await ws();modelResult={tool:'delete_database',args:{}};await text('удали все');assert.match(sends.at(-1).text,/не смог проверить/);assert.deepEqual(await ws(),before);
- modelResult={kind:'chat',reply:'У тебя 9876543 рублей',actions:[]};await text('дай объяснение');assert.doesNotMatch(sends.at(-1).text,/9876543/);assert.deepEqual(await ws(),before);
+ modelResult={kind:'chat',reply:'Можем составить план на 3 месяца.',actions:[]};await text('дай план');assert.match(sends.at(-1).text,/3 месяца/);assert.deepEqual(await ws(),before);
  });
 
 test('ordinary prose and one repaired tool-format error do not alter financial state',async()=>{
@@ -201,7 +201,7 @@ test('explicit after-purchase balance asks no redundant question and is not dedu
 });
 test('model sees major-unit preferences and current user amounts can be discussed',async()=>{
  await text('/цель 500000');await text('/план 25000');
- modelResult={plain:'Ты получил 4500 рублей. Как распределим?'};await text('Сегодня получил 4500 рублей');assert.match(sends.at(-1).text,/4500/);
+ modelResult={plain:'Ты получил 4500 рублей. Как распределим?'};await text('Как распределить 4500 рублей?');assert.match(sends.at(-1).text,/4500/);
  const s=requests.at(-1).messages.find(m=>m.content?.startsWith('CURRENT_STATE=')).content;
  assert.ok(s.includes('"goal":500000'));assert.ok(s.includes('"monthly":25000'));assert.ok(!s.includes('"goal":50000000'));
  modelResult={plain:'Твоя цель — 500000 рублей.'};await text('Какая сумма цели?');assert.match(sends.at(-1).text,/500000/);
@@ -290,4 +290,24 @@ test('transaction words survive incidental correction vocabulary',async()=>{
 });
 test('thousand suffix handles comma and period directly',async()=>{
  const {statedAmounts}=await import('../src/brain.mjs');assert.deepEqual(statedAmounts('4.5к, потом 5к.'),[450000,500000]);
+});
+
+test('computed same-currency totals and monthly progress reach model without numeric censorship',async()=>{
+ const before=await ws();modelResult={plain:'Можно разбить план на 3 месяца.'};await text('Составь план на 3 месяца');
+ const raw=requests.at(-1).messages.find(m=>m.content?.startsWith('CURRENT_STATE=')).content;const state=JSON.parse(raw.split('\n')[0].slice('CURRENT_STATE='.length));
+ for(const c of ['RUB','AZN']){const rows=before.filter(w=>w.currency===c);assert.equal(state.totals[c].known_amount,rows.filter(w=>w.initialized).reduce((n,w)=>n+w.amount,0)/100);}
+ assert.equal(typeof state.monthly_progress,'number');assert.equal(typeof state.remaining_to_monthly,'number');assert.match(sends.at(-1).text,/3 месяца/);assert.doesNotMatch(sends.at(-1).text,/угадывать/);
+ modelResult={plain:'Всего по рублёвым кошелькам '+state.totals.RUB.known_amount+' рублей.'};await text('А в общем?');assert.match(sends.at(-1).text,/Всего/);
+});
+test('false receipt gets one repair and a metadata-only guard event',async()=>{
+ modelQueue=[{plain:'Записал, не переживай'},{plain:'Понял тебя, брат.'}];const calls=groqCalls;await text('Ты меня слышишь?');assert.equal(groqCalls,calls+2);assert.match(sends.at(-1).text,/Понял тебя/);
+ const events=(await db.prepare('SELECT * FROM guard_events').all()).results;assert.ok(events.some(x=>x.type==='false_receipt'));assert.deepEqual(Object.keys(events[0]).sort(),['at','tool','type']);
+});
+test('financial event with plain prose retries using required financial tools',async()=>{
+ modelQueue=[{plain:'Хорошо, понял.'},{tool:'propose_transaction',args:{actions:[action('income','pocket',2100)]}}];const id=seq;await text('Получил 2100 рублей в карманные');
+ assert.equal(requests.at(-1).tool_choice,'required');assert.ok(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(id)).first());await callback('no:'+id);
+});
+test('diagnostic sanitizer removes numeric values, contacts and secret-shaped strings',async()=>{
+ const {sanitize}=await import('../src/diagnostics.mjs');const secret='gsk_'+'x'.repeat(40);const result=sanitize('На счету 2900 RUB, test@example.invalid '+secret+' https://example.invalid/private');
+ assert.doesNotMatch(result,/2900|test@|gsk_|https:/);await text('/баг');assert.match(sends.at(-1).text,/Диагностика/);
 });

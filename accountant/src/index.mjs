@@ -1,3 +1,4 @@
+import {bugReport} from './diagnostics.mjs';
 import {q,one,all,run,amount,money,validate,propose,apply,balances,balanceText,draftText,walletName,requestEnv,requestRemaining,consumeRequest} from './ledger.mjs';
 import {brain,unsafeReply,statedAmounts} from './brain.mjs';
 import {transcribe,voiceError} from './voice.mjs';
@@ -90,6 +91,7 @@ async function handleTurn(env,b,now,deadline){
   }
   return reply(env,id,'🎙 Я услышал:\n'+heard+'\n\nПроверь слова и суммы. Передать на разбор? Пока ничего не записано. Голос распознаёт Groq.',now,{inline_keyboard:[[{text:'✅ Разобрать',callback_data:'hear:'+id}],[{text:'❌ Не так / отмена',callback_data:'discard:'+id}]]});
  }
+ if(text==='/баг')return reply(env,id,await bugReport(env),now);
  if(text==='/start'||text==='/help')return reply(env,id,'С Бисмиллях, брат. Я твой личный бухгалтер: капитал Сабунчи отдельно, карманные отдельно.\n\n'+await balanceText(env)+'\n\n'+help,now);
  if(financialIntent(text)==='status')return reply(env,id,await recordStatus(env,now),now);
  if(text==='💰 Баланс'||text==='/balance'||financialIntent(text)==='balance')return reply(env,id,await balanceText(env),now);

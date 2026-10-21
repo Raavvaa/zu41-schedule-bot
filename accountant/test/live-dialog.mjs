@@ -1,7 +1,7 @@
 // Isolated workerd/D1, real Groq, fake Telegram. Never reads production financial data.
 import {Miniflare} from 'miniflare';
 import {build} from 'esbuild';
-import {readFile,mkdtemp,rm} from 'node:fs/promises';
+import {readFile,readdir,mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -22,7 +22,7 @@ async function chat(text,callback,voice=false){const id=seq++;const before=sent.
 const count=async()=>Number((await db.prepare('SELECT count(*) n FROM transactions').first()).n);
 const tests=[];async function check(name,fn){await new Promise(r=>setTimeout(r,25000));await db.prepare('DELETE FROM memory').run();await fn();tests.push(name);console.log('DIALOG_PASS '+name);}
 try{
- await db.exec((await readFile('accountant/migrations/0001.sql','utf8')).replace(/\n/g,' '));
+ for(const file of (await readdir('accountant/migrations')).filter(x=>x.endsWith('.sql')).sort())await db.exec((await readFile('accountant/migrations/'+file,'utf8')).replace(/\n/g,' '));
  await check('unknown balance is unknown',async()=>{const r=await chat('сколько у меня щас денег?');assert.match(r.text,/не подтверждён/);assert.equal(calls,0);});
  await check('real Russian audio transcription, preview acceptance and balance reply',async()=>{
  const before=await count();const r=await chat('',null,true);assert.match(r.text,/Я услышал/);assert.match(r.text,/баланс/i);assert.equal(await count(),before);
