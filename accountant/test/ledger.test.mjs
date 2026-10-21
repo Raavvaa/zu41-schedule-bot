@@ -165,7 +165,7 @@ test('unchanged confirmed zero is not another opening, but unknown zero is initi
  modelResult={tool:'undo_transaction',args:{}};const id=seq;await text('отмени последнюю ошибочную запись');assert.ok(JSON.parse((await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(id)).first()).payload).reversal_of);assert.deepEqual(await ws(),before);await callback('no:'+id);
  });
  test('memory search and explicit preference survive later turns without financial authority',async()=>{
- modelResult={tool:'remember_note',args:{note:'Люблю короткие ответы'}};await text('запомни я люблю короткие ответы');assert.equal((await db.prepare('SELECT context FROM settings').first()).context,'Люблю короткие ответы');
+ modelResult={tool:'remember_note',args:{note:'Люблю короткие ответы'}};await text('запомни я люблю короткие ответы');assert.equal((await db.prepare("SELECT group_concat(value,' ') AS content FROM facts").first()).content,'Люблю короткие ответы');
  modelQueue=[{tool:'search_memory',args:{query:'короткие'}},{kind:'chat',reply:'Помню, брат: покороче.',actions:[]}];await text('что я просил про ответы');assert.ok(requests.at(-1).messages.some(m=>m.role==='tool'&&m.content.includes('короткие')));
  });
  test('unsupported tool and fabricated amount cannot change journal or issue a receipt',async()=>{
@@ -208,13 +208,13 @@ test('model sees major-unit preferences and current user amounts can be discusse
  modelResult={plain:'Твоя цель — 500000 рублей.'};await text('Какая сумма цели?');assert.match(sends.at(-1).text,/500000/);
 });
 test('notes append without loss, deduplicate and reject overflow without erasing history',async()=>{
- await db.prepare("UPDATE settings SET context='' WHERE id=1").run();
+ await db.prepare('DELETE FROM facts').run();
  await text('/память Люблю короткие ответы');await text('/память Работаю геодезистом');
  modelResult={tool:'remember_note',args:{note:'Не писать утром'}};await text('Запомни: не писать утром');
- const expected='Люблю короткие ответы\nРаботаю геодезистом\nНе писать утром';assert.equal((await db.prepare('SELECT context FROM settings').first()).context,expected);
- await text('/память Работаю геодезистом');assert.equal((await db.prepare('SELECT context FROM settings').first()).context,expected);
- await text('/память '+ 'я'.repeat(1000));const before=(await db.prepare('SELECT context FROM settings').first()).context;
- await text('/память '+'б'.repeat(1000));assert.equal((await db.prepare('SELECT context FROM settings').first()).context,before);assert.match(sends.at(-1).text,/не добавил/);
+ const expected='Люблю короткие ответы\nРаботаю геодезистом\nНе писать утром';assert.equal((await db.prepare("SELECT group_concat(value,char(10)) AS content FROM facts").first()).content,expected);
+ await text('/память Работаю геодезистом');assert.equal((await db.prepare("SELECT group_concat(value,char(10)) AS content FROM facts").first()).content,expected);
+ await text('/память '+ 'я'.repeat(1000));const before=(await db.prepare("SELECT group_concat(value,char(10)) AS content FROM facts").first()).content;
+ await text('/память '+'б'.repeat(1000));assert.equal((await db.prepare("SELECT group_concat(value,char(10)) AS content FROM facts").first()).content,before);assert.match(sends.at(-1).text,/не добавил/);
 });
 test('receipt negation is local and normal descriptions are not receipts',async()=>{
  assert.equal(unsafeReply('Записал, не переживай'),true);assert.equal(unsafeReply('Ты записал лишние 3000'),false);assert.equal(unsafeReply('Пока ничего не записал'),false);
@@ -334,4 +334,37 @@ test('purchase discrepancy is asked once and reconciliation records expense with
  const p=JSON.parse((await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(id)).first()).payload);
  assert.equal(p.actions.filter(a=>a.type==='expense').length,1);await callback('yes:'+id);
  assert.equal((await ws()).find(w=>w.wallet==='pocket'&&w.currency==='RUB').amount,180000);assert.equal(groqCalls,calls);
+});
+
+
+test('facts upsert and deletion preserve other keys and survive restart',async()=>{
+ for(const [key,value] of [['a','Коротко'],['b','Без утренних сообщений'],['c','Сначала отдых']])await call('/test/fact',{op:'add',key,value,now:Date.now()});
+ await call('/test/fact',{op:'update',key:'b',value:'После обеда',now:Date.now()});
+ await call('/test/fact',{op:'delete',key:'c',value:'',now:Date.now()});
+ assert.equal((await db.prepare("SELECT value FROM facts WHERE key='a'").first()).value,'Коротко');
+ assert.equal((await db.prepare("SELECT value FROM facts WHERE key='b'").first()).value,'После обеда');
+ assert.equal(await db.prepare("SELECT value FROM facts WHERE key='c'").first(),null);
+ await assert.rejects(()=>call('/test/fact',{op:'add',key:'oversize',value:'x'.repeat(201),now:Date.now()}));
+});
+test('daily digest is budgeted and never runs twice on one day',async()=>{
+ await db.prepare('DELETE FROM memory').run();await db.prepare("UPDATE digest SET last_rowid=0,attempt_day=NULL").run();
+ for(let i=0;i<12;i++)await db.prepare('INSERT INTO memory VALUES(?,?,?,?)').bind('digest-fixture:'+i,'user','После работы хочу отдыхать.',Date.now()+i).run();
+ modelResult={plain:'Договорились после работы сначала отдыхать.'};const calls=groqCalls;
+ assert.equal((await call('/test/digest',{now:Date.now()})).ok,true);
+ assert.equal((await call('/test/digest',{now:Date.now()})).ok,false);assert.equal(groqCalls,calls+1);
+ assert.match((await db.prepare('SELECT content FROM digest').first()).content,/отдыхать/);
+});
+
+
+test('legacy flat context migrates in complete ordered chunks and facts cap does not erase old notes',async()=>{
+ const original='Синтетическая заметка. '.repeat(25);
+ await db.prepare('UPDATE settings SET context=? WHERE id=1').bind(original).run();
+ await db.exec((await readFile('migrations/0004_memory.sql','utf8')).replace(/\n/g,' '));
+ const chunks=(await db.prepare("SELECT value FROM facts WHERE key LIKE 'legacy:%' ORDER BY key").all()).results;
+ assert.equal(chunks.map(x=>x.value).join(''),original);assert.ok(chunks.every(x=>x.value.length<=200));
+ const n=(await db.prepare('SELECT count(*) n FROM facts').first()).n;
+ for(let i=n;i<50;i++)assert.equal((await call('/test/fact',{op:'add',key:'capacity:'+i,value:'Факт',now:Date.now()})).ok,true);
+ assert.equal((await call('/test/fact',{op:'add',key:'overflow',value:'Новый факт',now:Date.now()})).ok,false);
+ assert.equal((await db.prepare('SELECT count(*) n FROM facts').first()).n,50);
+ await db.prepare("DELETE FROM facts WHERE key LIKE 'capacity:%' OR key LIKE 'legacy:%'").run();await db.prepare("UPDATE settings SET context='' WHERE id=1").run();
 });

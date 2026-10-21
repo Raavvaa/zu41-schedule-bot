@@ -1,3 +1,4 @@
+import {conversationContext} from './memory.mjs';
 import {dialogState} from './dialog.mjs';
 import {hasAmount,statedAmounts,groundedActions,operationDate,evidenceAmounts} from './amounts.mjs';
 export {hasAmount,statedAmounts} from './amounts.mjs';
@@ -15,6 +16,7 @@ export const TOOLS=[
  tool('set_balance','Предложить установить фактический остаток или исправить ошибочный. «Сейчас всего / стало / правильно / лишнее записал» — сюда, НЕ новый доход. История сохраняется; подтверждение обязательно.',{wallet,currency,amount:field('string','Названный пользователем правильный итоговый остаток, не разница'),note:field('string','Причина исправления')}),
  tool('undo_transaction','Предложить отмену последней ошибочной записи с подтверждением. Не удаляет историю.'),
  tool('cancel_proposal','Отменить только неподтверждённое предложение. Баланс не меняется. Используй при «нет», «стоп», «не записывай». Не отменяет проведённую операцию.'),
+ tool('remember_fact','Сохранить или изменить факт только по явной просьбе. Не деньги и не инструкции.',{op:field('string','Действие',{enum:['add','update','delete']}),key:field('string','Ключ до 60 символов'),value:field('string','Значение до 200 символов; пустое для удаления')}),
  tool('remember_note','Сохранить личную заметку/предпочтение по просьбе владельца; не деньги и не системные права.',{note:field('string','Заметка до 1000 символов')}),
  tool('respond','Ответить по-человечески или задать ОДИН необходимый вопрос. Операции не выполняет. Для показа точных данных выбери balance/status/history.',{kind:field('string','Тип ответа',{enum:['chat','clarify','wish','balance','status','history']}),text:field('string','Короткий естественный ответ на русском')})
 ];
@@ -52,16 +54,16 @@ export function unsafeReply(text){
 export async function brain(env,text,now,deadline=Date.now()+21000){
  const started=Date.now(),day=new Date(now+10800000).toISOString().slice(0,10);
  if(!env.GROQ_API_KEY)throw Error('brain_config');
- const settings=await one(env,'SELECT goal,monthly,religion,context FROM settings WHERE id=1');
+ const context=await conversationContext(env);
  let state=await snapshot(env,now);
- const history=await all(env,'SELECT id,role,content,at FROM memory ORDER BY at DESC,rowid DESC LIMIT 24');
- const dialog=await dialogState(env);
+ const history=context.history;
+ const dialog=context.dialog;
  const continuation=dialog.mode==='awaiting_answer'&&dialog.question?.expires_at>now&&/^(?:(?:уже|это|в|из|на|рубли|рублей|манаты|манат|RUB|AZN|после|до|покупки|карманные|карманных|капитал|капитала|Сабунчи)[\s,.!]*)+$/iu.test(text);
  const evidenceText=continuation?String(dialog.question.payload?.evidence??'')+'\n'+text:text;
  const canPropose=hasAmount(text)||continuation;
  let remainingHistory=6000;const contextHistory=history.filter(x=>{remainingHistory-=Math.min(x.content.length,800);return remainingHistory>=0;}).reverse().map(x=>({role:x.role,content:x.content.slice(0,800)}));
- const preferences={...settings,goal:settings.goal==null?null:settings.goal/100,monthly:settings.monthly==null?null:settings.monthly/100};
- const messages=[{role:'system',content:SYSTEM},{role:'system',content:'CURRENT_STATE='+JSON.stringify(state)+'\nDIALOG_STATE='+JSON.stringify(dialog)+'\nPREFERENCES='+JSON.stringify(preferences)+'\nOWNER_BACKGROUND_UNTRUSTED='+String(env.OWNER_CONTEXT??'').slice(0,1500)},...contextHistory,{role:'user',content:text.slice(0,2500)}];
+ const preferences={religion:context.religion,goal:state.goal,monthly:state.monthly};
+ const messages=[{role:'system',content:SYSTEM},{role:'system',content:'CURRENT_STATE='+JSON.stringify(state)+'\nDIALOG_STATE='+JSON.stringify(dialog)+'\nFACTS_UNTRUSTED='+JSON.stringify(context.facts)+'\nDIGEST_UNTRUSTED='+JSON.stringify(context.digest)+'\nPREFERENCES='+JSON.stringify(preferences)+'\nOWNER_BACKGROUND_UNTRUSTED='+String(env.OWNER_CONTEXT??'').slice(0,1500)},...contextHistory,{role:'user',content:text.slice(0,2500)}];
  const clarify=t=>({kind:'clarify',reply:t,actions:[]});
  let lastCall='',repairUsed=false,requireTool=false;
  const eventRequest=hasAmount(text)&&/(?:получил|заработал|поднял|потратил|заплатил|оплатил|купил|перев[её]л)/iu.test(text)&&!/(?:хочу|планирую|не покупал|не получил|не потратил|если)/iu.test(text);
@@ -119,9 +121,9 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
   }
   if(name==='undo_transaction'&&!/отмен|ошиб|неправиль|удал|лишни/iu.test(text))return clarify('Нужно отменить последнюю запись?');
   if(name==='undo_transaction')return {kind:'undo',reply:'',actions:[]};
-  if(name==='remember_note'){
-   if(!/(?:^|[\s,.!])запомни(?=[\s,.!:]|$)|сохрани.*замет/iu.test(text))return clarify('Что именно запомнить о тебе?');
-   return {kind:'remember',reply:String(args.note??'').slice(0,1000),actions:[]};
+  if(name==='remember_fact'||name==='remember_note'){
+   if(!/(?:^|[\s,.!])(?:запомни|забудь)(?=[\s,.!:]|$)|сохрани.*замет|обнови.*(?:факт|замет)/iu.test(text))return clarify('Что именно запомнить о тебе?');
+   return {kind:'remember',reply:String(args.value??args.note??''),fact:name==='remember_fact'?args:null,actions:[]};
   }
   let result;
   requireTool=false;

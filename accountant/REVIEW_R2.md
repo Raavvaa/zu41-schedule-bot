@@ -76,3 +76,12 @@ before any deployment or change to deploy/brat-accountant.
 Unit tests mock Groq and Telegram. They do not prove model quality or real
 Telegram delivery. Additive schemas are applied only in disposable Miniflare
 D1 instances during this review. Deployment remains blocked on owner approval.
+
+4. Facts use independent keys, at most 50 records of 200 characters. Legacy
+   context is split into ordered chunks rather than truncated; its old field is
+   retained for backward compatibility. Digest creation uses the shared model
+   budget, at least 10 new messages, at most one attempt per local day. Dialogue
+   retention is bounded to 90 days AND 2000 messages (about 5 MB of text at the
+   existing 2500-character ceiling, plus encoding/index overhead). Financial
+   history is not purged. This is a conservative policy, not a measured D1 quota
+   forecast. The documented free per-database size is 500 MB.

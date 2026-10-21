@@ -1,3 +1,4 @@
+import {facts,rememberFact,appendFact,summarize} from './memory.mjs';
 import {dialogState,setDialog,answerQuestion} from './dialog.mjs';
 import {bugReport} from './diagnostics.mjs';
 import {q,one,all,run,amount,money,validate,propose,apply,balances,balanceText,draftText,walletName,requestEnv,requestRemaining,consumeRequest,amendProposal} from './ledger.mjs';
@@ -15,14 +16,6 @@ async function unlock(env,name,token){await run(env,'DELETE FROM locks WHERE nam
 async function tg(env,method,body){consumeRequest(env);try{const r=await fetch('https://api.telegram.org/bot'+env.TELEGRAM_BOT_TOKEN+'/'+method,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(8000)});const d=await r.json();return {ok:d.ok===true,id:d.result?.message_id,error:d.error_code??r.status,retry:Math.max(1,Number(d.parameters?.retry_after)||30)};}catch{return {ok:false,error:'uncertain'};}}
 async function reply(env,id,text,now,markup=menu){await run(env,'INSERT OR IGNORE INTO outbox(id,payload,due,created_at) VALUES(?,?,?,?)',String(id),JSON.stringify({text:String(text).slice(0,3900),...(markup?{reply_markup:markup}:{}),link_preview_options:{is_disabled:true}}),now,now);}
 async function memory(env,id,role,content,now){await run(env,'INSERT OR IGNORE INTO memory VALUES(?,?,?,?)',id,role,content.slice(0,2500),now);}
-async function appendNote(env,note){
- const current=(await one(env,'SELECT context FROM settings WHERE id=1')).context??'';
- note=note.trim().slice(0,1000);if(!note)return false;
- if(current.split('\n').includes(note))return true;
- const combined=[current,note].filter(Boolean).join('\n');
- if(combined.length>1500)return false;
- await run(env,'UPDATE settings SET context=? WHERE id=1',combined);return true;
-}
 async function draft(env,id,actions,now,reversal=null,options={}){
  try{
   const p=options.target?await amendProposal(env,id,options.target,actions,now,options):await propose(env,id,actions,now,reversal,options);
@@ -107,9 +100,10 @@ async function handleTurn(env,b,now,deadline){
  }
  const time=text.match(/^\/время\s+((?:1[0-9]|20):[0-5][0-9])$/);if(time){await run(env,'UPDATE settings SET nudge_time=? WHERE id=1',time[1]);return reply(env,id,'Буду писать в '+time[1]+' МСК по пн/ср/сб.',now);}
  if(text==='/тишина'||text==='/общайся'){await run(env,'UPDATE settings SET proactive=? WHERE id=1',text==='/общайся'?1:0);return reply(env,id,text==='/тишина'?'Хорошо, первым не пишу.':'Хорошо, буду иногда выходить на связь.',now);}
- if(text.startsWith('/память ')){const saved=await appendNote(env,text.slice(8));return reply(env,id,saved?'Добавил заметку, прежние сохранил. Посмотреть: /память.':'Заметки заполнены. Старые сохранил, новую не добавил. Посмотреть: /память.',now);}
- if(text==='/память')return reply(env,id,(await one(env,'SELECT context FROM settings WHERE id=1')).context||'Постоянных заметок пока нет.',now);
- if(text==='/забыть'){await env.DB.batch([q(env,'DELETE FROM memory'),q(env,"UPDATE settings SET context='' WHERE id=1")]);return reply(env,id,'Контекст разговоров и заметка очищены. Журнал денег сохранён.',now);}
+ if(text.startsWith('/память ')){const saved=await appendFact(env,text.slice(8),now);return reply(env,id,saved?'Добавил заметку, прежние сохранил. Посмотреть: /память.':'Заметки заполнены. Старые сохранил, новую не добавил. Посмотреть: /память.',now);}
+ if(text==='/память')return reply(env,id,(await facts(env)).map(f=>f.key+': '+f.value).join('\n')||'Постоянных заметок пока нет.',now);
+ if(text.startsWith('/забыть ')){await rememberFact(env,'delete',text.slice(8).trim(),'',now);return reply(env,id,'Заметку удалил. Журнал сохранён.',now);}
+ if(text==='/забыть'){await env.DB.batch([q(env,'DELETE FROM memory'),q(env,'DELETE FROM facts'),q(env,"UPDATE digest SET content='',last_rowid=0,attempt_day=NULL WHERE id=1"),q(env,"UPDATE settings SET context='' WHERE id=1")]);return reply(env,id,'Контекст разговоров и заметка очищены. Журнал денег сохранён.',now);}
  if(text==='📒 История'||text==='/history'){
   const rs=await all(env,'SELECT t.id,t.note,t.at,e.wallet,e.currency,e.delta FROM transactions t JOIN entries e ON e.tx_id=t.id ORDER BY t.at DESC,t.rowid DESC LIMIT 12');
   return reply(env,id,rs.length?rs.map(r=>`${day(r.at)} · ${walletName(r.wallet)} ${r.delta>=0?'+':'−'}${money(Math.abs(r.delta),r.currency)}${r.note?' · '+r.note:''}`).join('\n'):'Записей пока нет, брат.',now);
@@ -173,7 +167,7 @@ async function handleTurn(env,b,now,deadline){
   return draft(env,id,null,now,{id:t.id,entries:await all(env,'SELECT wallet,currency,delta FROM entries WHERE tx_id=?',t.id)});
  }
  if(result.kind==='remember'){
-  const saved=await appendNote(env,result.reply);
+  let saved=false;try{saved=result.fact?await rememberFact(env,result.fact.op,result.fact.key,result.fact.value,now):await appendFact(env,result.reply,now);}catch{}
   return reply(env,id,saved?'Запомнил заметку: '+result.reply:'Заметки заполнены. Старые сохранил, новую не добавил. Посмотреть: /память.',now);
  }
  if(result.kind==='balance')return reply(env,id,await balanceText(env),now);
@@ -292,5 +286,5 @@ export default {
    return json({ok:false},404);
   }catch{return json({ok:false},503);}
  },
- async scheduled(event,env,ctx){env=requestEnv(env);if(env.ENABLED==='true')ctx.waitUntil((async()=>{await drain(env);if(requestRemaining(env)<20)return;await nudge(env);await sendPending(env);const now=Date.now();await env.DB.batch([q(env,'DELETE FROM voice_inputs WHERE expires<?',now),q(env,'DELETE FROM memory WHERE at<?',now-30*86400000),q(env,"DELETE FROM updates WHERE state IN ('done','failed') AND created_at<?",now-30*86400000),q(env,"DELETE FROM drafts WHERE state!='ready' AND created_at<?",now-30*86400000)]);})());}
+ async scheduled(event,env,ctx){env=requestEnv(env);if(env.ENABLED==='true')ctx.waitUntil((async()=>{await drain(env);if(requestRemaining(env)<20)return;await summarize(env,Date.now());if(requestRemaining(env)<12)return;await nudge(env);await sendPending(env);const now=Date.now();await env.DB.batch([q(env,'DELETE FROM voice_inputs WHERE expires<?',now),q(env,'DELETE FROM memory WHERE at<? OR rowid NOT IN (SELECT rowid FROM memory ORDER BY at DESC,rowid DESC LIMIT 2000)',now-90*86400000),q(env,"DELETE FROM updates WHERE state IN ('done','failed') AND created_at<?",now-30*86400000),q(env,"DELETE FROM drafts WHERE state!='ready' AND created_at<?",now-30*86400000)]);})());}
 };
