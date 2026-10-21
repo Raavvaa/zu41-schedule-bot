@@ -41,7 +41,7 @@ test('wish, conversation and malicious model output cannot mutate ledger',async(
 test('slang proposal is validated and displays confirmation; cancellation changes no balance',async()=>{modelResult={kind:'proposal',reply:'предложение',actions:[action('income','pocket',4500),action('transfer','pocket',3000,'RUB','capital')]};const id=seq;const before=await ws();await text('поднял четыре с половиной тысячи руб, трёшку в дом остальное мне');assert.deepEqual(await ws(),before);assert.equal((await db.prepare('SELECT state FROM drafts WHERE id=?').bind(String(id)).first()).state,'ready');await callback('no:'+id);assert.deepEqual(await ws(),before);});
 test('model 429 keeps native balance and accounting commands available',async()=>{groqError=true;const before=await ws();await text('брат как дела');await text('/balance');assert.deepEqual(await ws(),before);groqError=false;});
 test('duplicate webhook creates one durable reply and no second ledger proposal',async()=>{const id=seq++;await text('/balance',1001,id);const n=(await db.prepare('SELECT count(*) AS n FROM outbox WHERE id=?').bind(String(id)).first()).n;await text('/balance',1001,id);assert.equal(n,1);assert.equal((await db.prepare('SELECT count(*) AS n FROM outbox WHERE id=?').bind(String(id)).first()).n,1);});
-test('proactive 19:30 time works, is once/day, and respects opt-out',async()=>{await db.prepare('DELETE FROM outbox').run();await db.prepare("UPDATE settings SET nudge_time='19:30',active=1,proactive=1,last_seen=0,quiet_until=0").run();const clock=Date.parse('2026-10-17T19:30:00+03:00');await call('/test/nudge',{now:clock});await call('/test/nudge',{now:clock+60000});assert.equal((await db.prepare("SELECT count(*) AS n FROM outbox WHERE id='nudge:2026-10-17'").first()).n,1);await db.prepare('UPDATE settings SET proactive=0').run();await call('/test/nudge',{now:clock+7*86400000});assert.equal((await db.prepare("SELECT count(*) AS n FROM outbox WHERE id='nudge:2026-10-24'").first()).n,0);});
+test('proactive 19:30 time works, is once/day, and respects opt-out',async()=>{modelResult={plain:'Брат, как неделя идёт? Можно двигаться небольшими шагами.'};await db.prepare('DELETE FROM outbox').run();await db.prepare("UPDATE settings SET nudge_time='19:30',active=1,proactive=1,last_seen=0,quiet_until=0").run();const clock=Date.parse('2026-10-17T19:30:00+03:00');await call('/test/nudge',{now:clock});await call('/test/nudge',{now:clock+60000});assert.equal((await db.prepare("SELECT count(*) AS n FROM outbox WHERE id='nudge:2026-10-17'").first()).n,1);await db.prepare('UPDATE settings SET proactive=0').run();await call('/test/nudge',{now:clock+7*86400000});assert.equal((await db.prepare("SELECT count(*) AS n FROM outbox WHERE id='nudge:2026-10-24'").first()).n,0);});
 
 
 test('Telegram 429 pauses sending; uncertain delivery is quarantined, not repeated',async()=>{
@@ -436,4 +436,16 @@ test('fact injection is data and cannot authorize an operation from old numbers'
  const before=await ws();modelResult={tool:'propose_transaction',args:{actions:[action('income','pocket',88000)],evidence:'88000'}};
  const id=seq;await text('Какие у нас договорённости?');assert.deepEqual(await ws(),before);assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(id)).first(),null);
  assert.match(requests.at(-1).messages[1].content,/FACTS_UNTRUSTED/);await call('/test/fact',{op:'delete',key:'injection-fixture',value:'',now:Date.now()});
+});
+
+
+test('proactive skip, recent conversation, fatigue and exhausted budget do not send messages',async()=>{
+ await db.prepare('DELETE FROM facts').run();await db.prepare("UPDATE digest SET content=''").run();
+ await db.prepare("UPDATE settings SET active=1,proactive=1,nudge_time='19:00',quiet_until=0,last_seen=0").run();
+ const clock=Date.parse('2027-02-11T19:00:00+03:00');modelResult={plain:'SKIP'};const calls=groqCalls;
+ await call('/test/nudge',{now:clock});await call('/test/nudge',{now:clock+1000});assert.equal(groqCalls,calls+1);
+ assert.equal(await db.prepare("SELECT id FROM outbox WHERE id='nudge:2027-02-11'").first(),null);
+ await db.prepare('UPDATE settings SET last_seen=?').bind(clock+86400000-3600000).run();await call('/test/nudge',{now:clock+86400000});assert.equal(groqCalls,calls+1);
+ await db.prepare('UPDATE settings SET last_seen=0').run();await db.prepare("UPDATE digest SET content='Тяжёлый день, устал после смены.',updated_at=?").bind(clock+2*86400000).run();await call('/test/nudge',{now:clock+2*86400000});assert.equal(groqCalls,calls+1);
+ await db.prepare("UPDATE digest SET content=''").run();await db.prepare("INSERT OR REPLACE INTO budgets(day,used) VALUES('2027-02-14',200)").run();await call('/test/nudge',{now:clock+3*86400000});assert.equal(groqCalls,calls+1);
 });

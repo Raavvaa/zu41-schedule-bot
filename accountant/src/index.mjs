@@ -1,3 +1,5 @@
+import {nudge} from './proactive.mjs';
+export {nudge} from './proactive.mjs';
 import {deliverReminders} from './tools.mjs';
 import {facts,rememberFact,appendFact,summarize} from './memory.mjs';
 import {dialogState,setDialog,answerQuestion,canConfirm,continuationAnswer} from './dialog.mjs';
@@ -116,9 +118,9 @@ async function handleTurn(env,b,now,deadline){
  const goal=text.match(/^\/(цель|план)\s+(\d+(?:[.,]\d{1,2})?)$/);
  if(goal){try{const n=amount(goal[2]);await run(env,`UPDATE settings SET ${goal[1]==='цель'?'goal':'monthly'}=? WHERE id=1`,n);return reply(env,id,'Принял: '+(goal[1]==='цель'?'цель ':'план на месяц ')+money(n)+'. Кошельки не менял.',now);}catch{return reply(env,id,'Нужна положительная сумма в рублях, например /цель 500000.',now);}}
  if(text==='⚙️ Настройки'||text==='/settings'){
-  const s=await one(env,'SELECT * FROM settings WHERE id=1');return reply(env,id,`Поддержка: ${s.proactive?'включена':'выключена'} — пн/ср/сб в ${s.nudge_time} МСК, максимум одно сообщение в день, без догоняющей рассылки.\nАвтозапись: до ${money(s.auto_limit)}; /авто 0 — выключить. Голос и исправления — с подтверждением.\nРелигиозные напоминания: ${s.religion?'да':'нет'}.\nВремя: /время 19:00\nПауза: /тишина; вернуть: /общайся.`,now,{inline_keyboard:[[{text:s.proactive?'Не писать первым':'Пиши иногда',callback_data:s.proactive?'support:off':'support:on'}],[{text:s.religion?'Без религиозных напоминаний':'Добавить религиозные напоминания',callback_data:s.religion?'religion:off':'religion:on'}],[{text:'Пауза до завтра',callback_data:'quiet:today'}]]});
+  const s=await one(env,'SELECT * FROM settings WHERE id=1');return reply(env,id,`Поддержка: ${s.proactive?'включена':'выключена'} — иногда в ${s.nudge_time} МСК, максимум раз в день, не раньше шести часов после разговора.\nАвтозапись: до ${money(s.auto_limit)}; /авто 0 — выключить. Голос и исправления — с подтверждением.\nРелигиозные напоминания: ${s.religion?'да':'нет'}.\nВремя: /время 19:00\nПауза: /тишина; вернуть: /общайся.`,now,{inline_keyboard:[[{text:s.proactive?'Не писать первым':'Пиши иногда',callback_data:s.proactive?'support:off':'support:on'}],[{text:s.religion?'Без религиозных напоминаний':'Добавить религиозные напоминания',callback_data:s.religion?'religion:off':'religion:on'}],[{text:'Пауза до завтра',callback_data:'quiet:today'}]]});
  }
- const time=text.match(/^\/время\s+((?:1[0-9]|20):[0-5][0-9])$/);if(time){await run(env,'UPDATE settings SET nudge_time=? WHERE id=1',time[1]);return reply(env,id,'Буду писать в '+time[1]+' МСК по пн/ср/сб.',now);}
+ const time=text.match(/^\/время\s+((?:1[0-9]|20):[0-5][0-9])$/);if(time){await run(env,'UPDATE settings SET nudge_time=? WHERE id=1',time[1]);return reply(env,id,'Буду писать в '+time[1]+' МСК, если будет уместный повод.',now);}
  if(text==='/тишина'||text==='/общайся'){await run(env,'UPDATE settings SET proactive=? WHERE id=1',text==='/общайся'?1:0);return reply(env,id,text==='/тишина'?'Хорошо, первым не пишу.':'Хорошо, буду иногда выходить на связь.',now);}
  if(text.startsWith('/память ')){const saved=await appendFact(env,text.slice(8),now);return reply(env,id,saved?'Добавил заметку, прежние сохранил. Посмотреть: /память.':'Заметки заполнены. Старые сохранил, новую не добавил. Посмотреть: /память.',now);}
  if(text==='/память')return reply(env,id,(await facts(env)).map(f=>f.key+': '+f.value).join('\n')||'Постоянных заметок пока нет.',now);
@@ -273,20 +275,6 @@ export async function drain(env,now=Date.now(),limits=null){
  if(Date.now()<interpretUntil-1000&&requestRemaining(env)>=18&&await one(env,"SELECT id FROM updates WHERE state='pending' LIMIT 1"))return drain(env,Date.now(),{deadline,interpretUntil});
  await sendPending(env,Date.now(),deadline);
 }
-export async function nudge(env,now=Date.now()){
- const s=await one(env,'SELECT * FROM settings WHERE id=1');
- await run(env,'UPDATE settings SET last_cron=? WHERE id=1',now);
- const local=new Date(now+10800000),weekday=local.getUTCDay(),time=local.toISOString().slice(11,16);
- const mins=t=>Number(t.slice(0,2))*60+Number(t.slice(3)),elapsed=mins(time)-mins(s.nudge_time);
- if(!s.active||!s.proactive||s.quiet_until>now||![1,3,6].includes(weekday)||elapsed<0||elapsed>14||now-s.last_seen<3600000)return;
- const ws=await balances(env),c=ws.find(x=>x.wallet==='capital'&&x.currency==='RUB');
- const phrases=['Брат, как неделя идёт? Можно двигаться небольшими шагами.','Как ты, брат? Если была смена или расход — напиши одной строкой, разложим.','Брат, без гонки. Посмотрим, что получилось отложить, и выберем следующий посильный шаг.'];
- let text=phrases[Math.floor(now/86400000)%phrases.length];
- if(c?.initialized&&s.goal)text+='\nВ Сабунчи по записям '+money(c.amount)+', до цели '+money(Math.max(0,s.goal-c.amount))+'.';
- if(s.monthly){const saved=await one(env,`SELECT COALESCE(sum(e.delta),0) AS n FROM entries e JOIN transactions t ON t.id=e.tx_id WHERE e.wallet='capital' AND e.currency='RUB' AND t.at>=? AND t.kind NOT LIKE '%opening%' AND NOT EXISTS(SELECT 1 FROM transactions orig WHERE orig.id=t.reversal_of AND orig.kind LIKE '%opening%')`,Date.parse(day(now).slice(0,7)+'-01T00:00:00+03:00'));text+='\nДо плана накоплений этого месяца: '+money(Math.max(0,s.monthly-saved.n))+'.';}
- if(s.religion&&weekday===6)text+='\nСабр, брат. Сделай посильное и уповай на Аллаха — без обещаний лёгких денег.';
- await reply(env,'nudge:'+day(now),text,now,{inline_keyboard:[[{text:'Сегодня без напоминаний',callback_data:'quiet:today'}]]});
-}
 export default {
  async fetch(req,env,ctx){
   env=requestEnv(env);
@@ -308,5 +296,18 @@ export default {
    return json({ok:false},404);
   }catch{return json({ok:false},503);}
  },
- async scheduled(event,env,ctx){env=requestEnv(env);if(env.ENABLED==='true')ctx.waitUntil((async()=>{await drain(env);if(requestRemaining(env)<20)return;await summarize(env,Date.now());if(requestRemaining(env)<12)return;await nudge(env);if(requestRemaining(env)>=10)await deliverReminders(env,Date.now());await sendPending(env);const now=Date.now();await env.DB.batch([q(env,'DELETE FROM voice_inputs WHERE expires<?',now),q(env,'DELETE FROM memory WHERE at<? OR rowid NOT IN (SELECT rowid FROM memory ORDER BY at DESC,rowid DESC LIMIT 2000)',now-90*86400000),q(env,"DELETE FROM updates WHERE state IN ('done','failed') AND created_at<?",now-30*86400000),q(env,"DELETE FROM drafts WHERE state!='ready' AND created_at<?",now-30*86400000)]);})());}
+ async scheduled(event,env,ctx){env=requestEnv(env);if(env.ENABLED==='true')ctx.waitUntil((async()=>{
+  await drain(env);const now=Date.now();
+  if(requestRemaining(env)>=15)await nudge(env,now);
+  if(requestRemaining(env)>=10)await deliverReminders(env,now);
+  if(requestRemaining(env)>=10)await summarize(env,now);
+  await sendPending(env);
+  if(requestRemaining(env)>=5)await env.DB.batch([
+   q(env,'DELETE FROM voice_inputs WHERE expires<?',now),
+   q(env,'DELETE FROM memory WHERE at<? OR rowid NOT IN (SELECT rowid FROM memory ORDER BY at DESC,rowid DESC LIMIT 2000)',now-90*86400000),
+   q(env,"DELETE FROM updates WHERE state IN ('done','failed') AND created_at<?",now-30*86400000),
+   q(env,"DELETE FROM drafts WHERE state!='ready' AND created_at<?",now-30*86400000),
+   q(env,'DELETE FROM guard_events WHERE rowid NOT IN (SELECT rowid FROM guard_events ORDER BY at DESC,rowid DESC LIMIT 2000)')
+  ]);
+ })());}
 };

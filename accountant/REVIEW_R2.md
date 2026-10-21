@@ -106,3 +106,10 @@ D1 instances during this review. Deployment remains blocked on owner approval.
    three active items, at least an hour apart, and expire when over an hour late.
    Validation: 78 isolated tests. These tests prove application guards, not
    immunity of an LLM to every possible prompt injection.
+
+7. Contextual proactive messages: at most one model attempt/day, six-hour silence,
+   configured daytime window, opt-out/quiet checks, recent mood suppression and
+   SKIP. Mood evidence expires after 36 hours, so one difficult day does not mute
+   the bot forever. Monetary progress is appended deterministically. Digest and
+   proactive calls share the daily budget. Maintenance observes invocation limits.
+   Validation: 79 isolated tests, including skip, fatigue and budget exhaustion.

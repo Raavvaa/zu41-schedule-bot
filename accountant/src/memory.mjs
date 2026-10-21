@@ -15,11 +15,12 @@ export async function appendFact(env,value,now){
 export async function conversationContext(env){
  const row=await one(env,`SELECT religion,
  (SELECT json_object('mode',mode,'pending_draft_id',pending_draft_id,'question',question,'last_applied_tx',last_applied_tx,'last_cancelled_draft',last_cancelled_draft,'updated_at',updated_at) FROM dialog_state WHERE id=1) AS dialog,
- (SELECT json_group_array(json_object('key',key,'value',value)) FROM facts) AS facts,
+ (SELECT json_group_array(json_object('key',key,'value',value,'updated_at',updated_at)) FROM facts) AS facts,
  (SELECT json_group_array(json_object('id',id,'role',role,'content',content,'at',at)) FROM (SELECT * FROM memory ORDER BY at DESC,rowid DESC LIMIT 24)) AS history,
+ (SELECT updated_at FROM digest WHERE id=1) AS digest_updated,
  (SELECT content FROM digest WHERE id=1) AS digest FROM settings WHERE id=1`);
  const dialog=JSON.parse(row.dialog);dialog.question=dialog.question?JSON.parse(dialog.question):null;
- return {religion:!!row.religion,dialog,facts:JSON.parse(row.facts),digest:row.digest,history:JSON.parse(row.history)};
+ return {religion:!!row.religion,dialog,facts:JSON.parse(row.facts),digest:row.digest,digest_updated:row.digest_updated,history:JSON.parse(row.history)};
 }
 export async function summarize(env,now){
  const day=new Date(now+10800000).toISOString().slice(0,10);
