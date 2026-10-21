@@ -25,7 +25,7 @@ async function draft(env,id,actions,now,reversal=null,options={}){
   const record=await one(env,'SELECT state FROM drafts WHERE id=?',String(id));
   if(record.state==='applied'||p.auto&&await apply(env,id,now))return reply(env,id,receiptText(p),now,{inline_keyboard:[[{text:'↩️ Отменить',callback_data:'undo:'+id}]]});
   await setDialog(env,'proposal_ready',id,now,{pending:String(id)});const protectedCapital=p.entries.some(x=>x.wallet==='capital'&&x.delta<0)&&!p.actions?.every(a=>a.type==='opening');
-  return reply(env,id,(protectedCapital?'⚠️ Брат, это уменьшит капитал Сабунчи. Если трата уже была, учтём честно.\n\n':'')+draftText(p),now,{inline_keyboard:[[{text:protectedCapital?'⚠️ Подтверждаю снятие капитала':'✅ Записать',callback_data:'yes:'+id}],[{text:'❌ Отмена',callback_data:'no:'+id}]]});
+  return reply(env,id,(protectedCapital?(p.amend||p.reversal_of?'⚠️ Корректировка уменьшит учётный остаток капитала. Это исправление записи, не новая трата.\n\n':'⚠️ Брат, это уменьшит капитал Сабунчи. Если трата уже была, учтём честно.\n\n'):'')+draftText(p),now,{inline_keyboard:[[{text:protectedCapital?(p.amend||p.reversal_of?'⚠️ Подтверждаю корректировку':'⚠️ Подтверждаю снятие капитала'):'✅ Записать',callback_data:'yes:'+id}],[{text:'❌ Отмена',callback_data:'no:'+id}]]});
  }catch(e){if(e.message==='request_budget')throw e;return reply(env,id,e.message==='unchanged'?'Этот остаток уже сохранён, брат. Повторная запись не нужна.':e.message==='insufficient'?'Брат, по записям в кошельке не хватает денег. Если остаток неверный — напиши «/остаток карманные RUB 5000» с реальной суммой.':e.message==='uninitialized'?'Сначала подтвердим остатки, брат. Пример: /остаток карманные RUB 5000\nДля капитала: /остаток капитал RUB 100000\nЭто примеры формата, не запись денег.':'Не смог надёжно разобрать сумму и кошелёк. Напиши проще: /доход карманные RUB 3500 смена',now);}
 }
 function localAction(t){
@@ -131,7 +131,7 @@ async function handleTurn(env,b,now,deadline){
   return reply(env,id,rs.length?rs.map(r=>`${day(r.at)} · ${walletName(r.wallet)} ${r.delta>=0?'+':'−'}${money(Math.abs(r.delta),r.currency)}${r.note?' · '+r.note:''}`).join('\n'):'Записей пока нет, брат.',now);
  }
  if(text==='/отмена'){
-  const t=await one(env,'SELECT * FROM transactions t WHERE reversal_of IS NULL AND NOT EXISTS(SELECT 1 FROM transactions r WHERE r.reversal_of=t.id) ORDER BY at DESC,rowid DESC LIMIT 1');
+  const t=await one(env,"SELECT * FROM transactions t WHERE (reversal_of IS NULL OR kind='amend') AND NOT EXISTS(SELECT 1 FROM transactions r WHERE r.reversal_of=t.id) ORDER BY at DESC,rowid DESC LIMIT 1");
   if(!t)return reply(env,id,'Нет записи для отмены.',now);
   return draft(env,id,null,now,{id:t.id,entries:await all(env,'SELECT wallet,currency,delta FROM entries WHERE tx_id=?',t.id)});
  }
@@ -184,7 +184,7 @@ async function handleTurn(env,b,now,deadline){
  
  if(result.kind==='proposal'||result.kind==='amend')return draft(env,id,result.actions,now,null,{target:result.target,evidence:result.evidence,effective_at:result.effective_at,proven:!!result.evidence,voice:!!b.voice_source||result.voice});
  if(result.kind==='undo'){
-  const t=await one(env,'SELECT * FROM transactions t WHERE reversal_of IS NULL AND NOT EXISTS(SELECT 1 FROM transactions r WHERE r.reversal_of=t.id) ORDER BY at DESC,rowid DESC LIMIT 1');
+  const t=await one(env,"SELECT * FROM transactions t WHERE (reversal_of IS NULL OR kind='amend') AND NOT EXISTS(SELECT 1 FROM transactions r WHERE r.reversal_of=t.id) ORDER BY at DESC,rowid DESC LIMIT 1");
   if(!t)return reply(env,id,'В журнале пока нет записи для отмены.',now);
   return draft(env,id,null,now,{id:t.id,entries:await all(env,'SELECT wallet,currency,delta FROM entries WHERE tx_id=?',t.id)});
  }
@@ -242,7 +242,7 @@ export async function drain(env,now=Date.now(),limits=null){
  let token;
  // A concurrent webhook waits for the current turn and takes over instead of
  // abandoning its update until the next Cron. Every waiter has its own budget.
- for(let attempt=0;attempt<4&&Date.now()<interpretUntil-1000;attempt++){token=await lock(env,'dialog',Date.now());if(token)break;await sleep(1000*2**attempt);}
+ for(let attempt=0;attempt<5&&Date.now()<interpretUntil-1000;attempt++){token=await lock(env,'dialog',Date.now());if(token)break;if(attempt<4)await sleep(Math.min(1000*2**attempt,Math.max(0,interpretUntil-Date.now()-1000)));}
  if(!token)return;
  try{
   for(let turn=0;turn<8&&Date.now()<interpretUntil-1000&&requestRemaining(env)>=16;turn++){
@@ -280,7 +280,7 @@ export default {
   env=requestEnv(env);
   try{
    const u=new URL(req.url);
-   if(u.pathname==='/health')return json({ok:true,version:'2.1.0',agent_tools:true,voice:true,sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
+   if(u.pathname==='/health')return json({ok:true,version:'3.0.0-review',agent_tools:true,voice:true,sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
    if(u.pathname==='/telegram'&&req.method==='POST'){
     if(env.ENABLED!=='true'||!await equal(req.headers.get('X-Telegram-Bot-Api-Secret-Token'),env.WEBHOOK_SECRET))return json({ok:false},403);
     if(Number(req.headers.get('content-length'))>16384)return json({ok:false},413);

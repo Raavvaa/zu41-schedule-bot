@@ -41,3 +41,10 @@ test('spoken teen amounts parse and oversized amount lists are bounded',()=>{
  assert.ok(evidenceAmounts('семнадцать тысяч').includes(1700000));
  const text=Array.from({length:40},(_,i)=>String(i+1)).join(' ');assert.equal(groundedActions([{amount:100}],text,text),false);
 });
+
+import {assertDeploymentApproval} from '../deploy-gate.mjs';
+test('deployment requires explicit source approval and the dedicated deployment branch',()=>{
+ const sha='a'.repeat(40),env={GITHUB_REPOSITORY:'Raavvaa/zu41-schedule-bot',GITHUB_REF_NAME:'deploy/brat-accountant',ACCOUNTANT_APPROVED_SHA:sha};
+ assert.doesNotThrow(()=>assertDeploymentApproval(env,sha));
+ for(const patch of [{GITHUB_REF_NAME:'main'},{GITHUB_REF_NAME:'feat/brat-accountant'},{ACCOUNTANT_APPROVED_SHA:'b'.repeat(40)},{GITHUB_REPOSITORY:'different/repo'}])assert.throws(()=>assertDeploymentApproval({...env,...patch},sha));
+});

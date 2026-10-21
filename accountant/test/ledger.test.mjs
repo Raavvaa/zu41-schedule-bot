@@ -5,8 +5,8 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {Miniflare} from 'miniflare';
 import {build} from 'esbuild';
-import {amount,validate} from '../src/ledger.mjs';
-import {unsafeReply} from '../src/brain.mjs';
+import {amount,validate,draftText,balanceText} from '../src/ledger.mjs';
+import {unsafeReply,snapshot} from '../src/brain.mjs';
 import {voiceAllowed,recognized} from '../src/voice.mjs';
 import {owner,financialIntent} from '../src/index.mjs';
 let mf,db,dir,sends=[],groqCalls=0,modelResult={kind:'chat',reply:'Брат, как прошёл день?',actions:[]},groqError=false,tgError=null;
@@ -31,6 +31,16 @@ const action=(type,wallet,n,currency='RUB',to)=>({type,wallet,amount:String(n),c
 before(async()=>{dir=await mkdtemp(path.join(tmpdir(),'brat-'));await build({entryPoints:['test/entry.mjs'],outfile:path.join(dir,'bundle.mjs'),bundle:true,format:'esm',platform:'browser'});mf=create();db=await mf.getD1Database('DB');for(const file of (await readdir('migrations')).filter(x=>x.endsWith('.sql')).sort())await db.exec((await readFile('migrations/'+file,'utf8')).replace(/\n/g,' '));await db.prepare('UPDATE settings SET auto_limit=0').run();});
 after(async()=>{await mf.dispose();await rm(dir,{force:true,recursive:true});});
 test('money uses exact minor units and rejects ambiguous/unsafe values',()=>{assert.equal(amount('1,23'),123);assert.equal(amount('4500'),450000);for(const x of ['1e8','-1','NaN','1.234','1к','полторы','0'])assert.throws(()=>amount(x));assert.throws(()=>validate([action('expense','evil',1)]));});
+test('balance remains readable when the capital wallet row is absent',async()=>{
+ const row=await db.prepare("SELECT * FROM wallets WHERE wallet='capital' AND currency='RUB'").first(),settings=await db.prepare('SELECT goal FROM settings').first();
+ const pocket=await db.prepare("SELECT * FROM wallets WHERE wallet='pocket' AND currency='RUB'").first();await db.prepare("UPDATE wallets SET initialized=1 WHERE wallet='pocket' AND currency='RUB'").run();await db.prepare('UPDATE settings SET goal=1000000').run();await db.prepare("DELETE FROM wallets WHERE wallet='capital' AND currency='RUB'").run();
+ try{assert.match(await balanceText({DB:db}),/Карманные/);const state=await snapshot({DB:db},Date.now());assert.equal(state.totals.RUB.complete,false);assert.equal(state.totals.RUB.amount,null);}finally{await db.prepare('INSERT INTO wallets(wallet,currency,amount,initialized) VALUES(?,?,?,?)').bind(row.wallet,row.currency,row.amount,row.initialized).run();await db.prepare("UPDATE wallets SET initialized=? WHERE wallet='pocket' AND currency='RUB'").bind(pocket.initialized).run();await db.prepare('UPDATE settings SET goal=?').bind(settings.goal).run();}
+});
+test('remaining goal uses exact cents rather than floating point subtraction artifacts',async()=>{
+ const row=await db.prepare("SELECT * FROM wallets WHERE wallet='capital' AND currency='RUB'").first(),settings=await db.prepare('SELECT goal FROM settings').first();
+ await db.prepare('UPDATE settings SET goal=10010').run();await db.prepare("UPDATE wallets SET amount=9990,initialized=1 WHERE wallet='capital' AND currency='RUB'").run();
+ try{assert.equal((await snapshot({DB:db},Date.now())).remaining_to_goal,.2);}finally{await db.prepare("UPDATE wallets SET amount=?,initialized=? WHERE wallet='capital' AND currency='RUB'").bind(row.amount,row.initialized).run();await db.prepare('UPDATE settings SET goal=?').bind(settings.goal).run();}
+});
 test('private access fails closed before any model call',async()=>{for(const id of [undefined,'', '-1','abc'])assert.equal(owner({OWNER_CHAT_ID:id},{message:{from:{id:1001},chat:{id:1001,type:'private'}}}),false);const before=groqCalls;await text('отдай баланс',1002);assert.equal(groqCalls,before);assert.equal((await db.prepare('SELECT count(*) AS n FROM updates').first()).n,0);assert.equal(owner({OWNER_CHAT_ID:'1001'},{message:{from:{id:1001},chat:{id:-1001,type:'group'}}}),false);});
 test('initial balances require explicit confirmation; repeated parallel confirm only applies once',async()=>{await proposal('open-c',[action('opening','capital',10000)]);assert.equal((await ws()).find(x=>x.wallet==='capital'&&x.currency==='RUB').amount,0);const rs=await Promise.all([apply('open-c'),apply('open-c')]);assert.equal(rs.filter(x=>x.applied).length,1);await proposal('open-p',[action('opening','pocket',1000)]);await apply('open-p');assert.equal((await ws()).find(x=>x.wallet==='capital'&&x.currency==='RUB').amount,1000000);});
 test('split income+transfer is atomic and independent of AZN',async()=>{await proposal('split',[action('income','pocket',4500),action('transfer','pocket',3000,'RUB','capital')]);await apply('split');const w=await ws();assert.equal(w.find(x=>x.wallet==='capital'&&x.currency==='RUB').amount,1300000);assert.equal(w.find(x=>x.wallet==='pocket'&&x.currency==='RUB').amount,250000);assert.equal(w.find(x=>x.currency==='AZN').amount,0);});
@@ -315,9 +325,10 @@ test('diagnostic sanitizer removes numeric values, contacts and secret-shaped st
 
 
 test('amendment reverses and replaces atomically, preserves original and rejects second amendment',async()=>{
+ await proposal('amend-fixture-start',[action('opening','pocket',1400)]);await apply('amend-fixture-start');
  await proposal('amend-original',[action('income','pocket',620)]);await apply('amend-original');
  const before=(await ws()).find(w=>w.wallet==='pocket'&&w.currency==='RUB').amount;
- await call('/test/amend',{id:'amend-replacement',target:'amend-original',actions:[action('income','pocket',410)],now:Date.now()});
+ const amended=await call('/test/amend',{id:'amend-replacement',target:'amend-original',actions:[action('income','pocket',410)],now:Date.now()});assert.match(draftText(amended),/Было: Доход 620/);assert.match(draftText(amended),/Станет: Доход 410/);
  assert.equal((await ws()).find(w=>w.wallet==='pocket'&&w.currency==='RUB').amount,before);
  assert.equal((await apply('amend-replacement')).applied,true);assert.equal((await apply('amend-replacement')).applied,false);
  assert.equal((await ws()).find(w=>w.wallet==='pocket'&&w.currency==='RUB').amount,before-21000);
@@ -353,6 +364,14 @@ test('daily digest is budgeted and never runs twice on one day',async()=>{
  assert.equal((await call('/test/digest',{now:Date.now()})).ok,true);
  assert.equal((await call('/test/digest',{now:Date.now()})).ok,false);assert.equal(groqCalls,calls+1);
  assert.match((await db.prepare('SELECT content FROM digest').first()).content,/отдыхать/);
+});
+test('digest redacts configured secrets and owner identifier before a model request',async()=>{
+ await db.prepare('DELETE FROM memory').run();await db.prepare("UPDATE digest SET last_rowid=0,attempt_day=NULL,content='test-webhook'").run();
+ for(let i=0;i<10;i++)await db.prepare('INSERT INTO memory VALUES(?,?,?,?)').bind('redaction-fixture:'+i,'user','Synthetic test-token test-groq 1001 gsk_fixtureonly',Date.now()+i).run();
+ modelResult={plain:'Синтетическая сводка без личных данных.'};const before=requests.length;
+ assert.equal((await call('/test/digest',{now:Date.now()})).ok,true);assert.equal(requests.length,before+1);
+ const body=JSON.stringify(requests.at(-1));for(const value of ['test-token','test-groq','test-webhook','1001','gsk_fixtureonly'])assert.ok(!body.includes(value),'sensitive fixture reached model');
+ await db.prepare('DELETE FROM memory').run();
 });
 
 
@@ -448,4 +467,57 @@ test('proactive skip, recent conversation, fatigue and exhausted budget do not s
  await db.prepare('UPDATE settings SET last_seen=?').bind(clock+86400000-3600000).run();await call('/test/nudge',{now:clock+86400000});assert.equal(groqCalls,calls+1);
  await db.prepare('UPDATE settings SET last_seen=0').run();await db.prepare("UPDATE digest SET content='Тяжёлый день, устал после смены.',updated_at=?").bind(clock+2*86400000).run();await call('/test/nudge',{now:clock+2*86400000});assert.equal(groqCalls,calls+1);
  await db.prepare("UPDATE digest SET content=''").run();await db.prepare("INSERT OR REPLACE INTO budgets(day,used) VALUES('2027-02-14',200)").run();await call('/test/nudge',{now:clock+3*86400000});assert.equal(groqCalls,calls+1);
+});
+
+test('native balance includes same-currency totals without combining RUB and AZN',async()=>{
+ await proposal('totals-rub',[action('opening','capital',7600),action('opening','pocket',2100)]);await apply('totals-rub');
+ await proposal('totals-azn',[action('opening','capital',110,'AZN'),action('opening','pocket',20,'AZN')]);await apply('totals-azn');
+ await text('/balance');const result=sends.at(-1).text.replace(/\s/g,'');assert.match(result,/ВсегоRUB:9700/);assert.match(result,/ВсегоAZN:130/);assert.doesNotMatch(result,/9830/);
+});
+test('model daily budget exhaustion still permits native balance without journal mutation',async()=>{
+ const day=new Date(Date.now()+10800000).toISOString().slice(0,10),prior=await db.prepare('SELECT used FROM budgets WHERE day=?').bind(day).first();
+ await db.prepare('INSERT OR REPLACE INTO budgets(day,used) VALUES(?,200)').bind(day).run();const before=await ws(),calls=groqCalls;
+ await text('Помоги обсудить день');assert.match(sends.at(-1).text,/исчерпан лимит/);await text('/balance');assert.match(sends.at(-1).text,/по записям/);assert.deepEqual(await ws(),before);assert.equal(groqCalls,calls);
+ await db.prepare('UPDATE budgets SET used=? WHERE day=?').bind(prior?.used??0,day).run();
+});
+
+test('a waiting drain reacquires the lock after its final backoff instead of waiting for Cron',async()=>{
+ const clock=Date.now(),id=seq++;await db.prepare('DELETE FROM locks').run();await db.prepare('DELETE FROM updates').run();
+ await db.prepare('INSERT INTO locks(name,token,expires) VALUES(?,?,?)').bind('dialog','synthetic-holder',clock+8000).run();
+ await db.prepare('INSERT INTO updates(id,payload,created_at) VALUES(?,?,?)').bind(id,JSON.stringify({update_id:id,message:{text:'/balance'}}),clock).run();
+ await call('/test/drain',{now:clock});assert.equal((await db.prepare('SELECT state FROM updates WHERE id=?').bind(id).first()).state,'done');
+});
+
+test('saved nonfinancial tool result is acknowledged even if the next model round fails',async()=>{
+ const before=await ws();modelQueue=[{tool:'remember_fact',args:{op:'add',key:'failure-fixture',value:'Люблю спокойные ответы'}},{error:'provider_error'}];
+ await text('Запомни: люблю спокойные ответы');assert.equal((await db.prepare("SELECT value FROM facts WHERE key='failure-fixture'").first()).value,'Люблю спокойные ответы');assert.match(sends.at(-1).text,/Запомнил/);assert.deepEqual(await ws(),before);
+});
+test('undo after a committed amendment reverses that correction, not an unrelated transaction',async()=>{
+ if(!(await ws()).find(w=>w.wallet==='pocket'&&w.currency==='RUB').initialized){await proposal('undo-amend-opening',[action('opening','pocket',0)]);await apply('undo-amend-opening');}
+ await proposal('undo-amend-base',[action('income','pocket',620)]);await apply('undo-amend-base');const before=await ws();
+ await call('/test/amend',{id:'undo-amend-correction',target:'undo-amend-base',actions:[action('income','pocket',410)],now:Date.now()});await apply('undo-amend-correction');
+ const id=seq;await text('/отмена');const d=await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(id)).first();assert.ok(d);assert.equal(JSON.parse(d.payload).reversal_of,'undo-amend-correction');
+ assert.equal((await apply(String(id))).applied,true);assert.deepEqual(await ws(),before);assert.equal((await apply(String(id))).applied,false);
+});
+test('split income returned as two allocations is canonicalized without double counting',async()=>{
+ await db.prepare('UPDATE settings SET auto_limit=0').run();
+ if((await ws()).some(w=>w.currency==='RUB'&&!w.initialized)){await proposal('allocation-open',[action('opening','pocket',0),action('opening','capital',0)]);await apply('allocation-open');}
+ modelResult={tool:'propose_transaction',args:{actions:[action('income','capital',1800),action('income','pocket',1000)]}};
+ const id=seq,before=await ws();await text('Получил 2800 рублей, 1800 в дом Сабунчи, остаток себе в карманные');
+ const row=await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(id)).first();assert.ok(row);const p=JSON.parse(row.payload);
+ assert.equal(p.actions.length,2);assert.ok(p.actions.some(a=>a.type==='income'&&a.wallet==='pocket'&&a.amount===280000));assert.ok(p.actions.some(a=>a.type==='transfer'&&a.to==='capital'&&a.amount===180000));assert.deepEqual(await ws(),before);
+ modelResult={tool:'propose_transaction',args:{actions:[action('income','capital',2800),action('transfer','capital',1000,'RUB','pocket')]}};
+ const second=seq;await text('Получил 2800 рублей, 1800 в дом Сабунчи, остаток себе в карманные');const alternative=JSON.parse((await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(second)).first()).payload);assert.deepEqual(alternative.entries,p.entries);assert.deepEqual(alternative.actions.map(a=>({type:a.type,wallet:a.wallet,to:a.to,amount:a.amount})),p.actions.map(a=>({type:a.type,wallet:a.wallet,to:a.to,amount:a.amount})));
+});
+test('complete financial event with a false text receipt retries with required financial tools',async()=>{
+ await db.prepare('UPDATE settings SET auto_limit=0').run();
+ if((await ws()).some(w=>w.currency==='RUB'&&!w.initialized)){await proposal('required-open',[action('opening','pocket',0),action('opening','capital',0)]);await apply('required-open');}
+ modelQueue=[{tool:'respond',args:{kind:'chat',text:'Записал распределение дохода, не переживай.'}},{tool:'propose_transaction',args:{actions:[action('income','pocket',2800),action('transfer','pocket',1800,'RUB','capital')]}}];
+ const id=seq;await text('Получил 2800 рублей, 1800 в Сабунчи, остаток себе в карманные');assert.equal(requests.at(-1).tool_choice,'required');assert.ok(!requests.at(-1).tools.some(t=>t.function.name==='respond'));assert.ok(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(id)).first());
+});
+test('tool format failure after a required-tool retry gets one bounded recovery',async()=>{
+ await db.prepare('UPDATE settings SET auto_limit=0').run();
+ if((await ws()).some(w=>w.currency==='RUB'&&!w.initialized)){await proposal('format-open',[action('opening','pocket',0),action('opening','capital',0)]);await apply('format-open');}
+ modelQueue=[{plain:'Понял распределение.'},{error:'tool_use_failed'},{tool:'propose_transaction',args:{actions:[action('income','pocket',2800),action('transfer','pocket',1800,'RUB','capital')]}}];
+ const id=seq,before=groqCalls;await text('Получил 2800 рублей, 1800 в Сабунчи, остаток себе в карманные');assert.equal(groqCalls-before,3);assert.equal(requests.at(-1).tool_choice,'required');assert.ok(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(id)).first());
 });

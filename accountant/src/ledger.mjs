@@ -61,7 +61,7 @@ export async function propose(env,id,raw,now,reversal=null,options={}){
   if(!w||!Number.isSafeInteger(d.delta)||w.amount+d.delta<0)throw Error('insufficient');
   if(!reversal&&actions.every(a=>a.type!=='opening')&&!w.initialized)throw Error('uninitialized');
  }
- const payload={actions,entries:ds,before:ws.map(w=>({wallet:w.wallet,currency:w.currency,amount:w.initialized?w.amount:null})),reversal_of:reversal?.id??null,amend:!!options.amend,effective_at:s.original_at??options.effective_at??now,evidence:options.evidence??null,reconcile:!!options.reconcile,voice:!!options.voice,auto:automaticEligible(actions,{limit:s.auto_limit,voice:options.voice,proven:options.proven,reversal:!!reversal,reconcile:options.reconcile})};
+ const payload={actions,entries:ds,before:ws.map(w=>({wallet:w.wallet,currency:w.currency,amount:w.initialized?w.amount:null})),reversal_of:reversal?.id??null,amend:!!options.amend,original_actions:options.original_actions??null,original_at:options.original_at??null,effective_at:s.original_at??options.effective_at??now,evidence:options.evidence??null,reconcile:!!options.reconcile,voice:!!options.voice,auto:automaticEligible(actions,{limit:s.auto_limit,voice:options.voice,proven:options.proven,reversal:!!reversal,reconcile:options.reconcile})};
  await env.DB.batch([
  q(env,"UPDATE drafts SET state='cancelled' WHERE state='ready' AND id!=? AND NOT EXISTS(SELECT 1 FROM drafts WHERE id=?)",id,id),
  q(env,'INSERT OR IGNORE INTO drafts(id,payload,revision,created_at,expires_at) VALUES(?,?,?,?,?)',id,JSON.stringify(payload),s.revision,now,now+15*60000)]);
@@ -90,12 +90,14 @@ export const walletName=w=>w==='capital'?'🏠 Сабунчи':'👛 Карма�
 export async function balanceText(env){
  const ws=await balances(env),s=await one(env,'SELECT goal FROM settings WHERE id=1');
  let text='Брат, по записям сейчас:\n'+ws.filter(w=>w.currency==='RUB'||w.initialized).map(w=>walletName(w.wallet)+': '+(w.initialized?money(w.amount,w.currency):'остаток ещё не подтверждён')).join('\n');
+ for(const currency of ['RUB','AZN']){const known=ws.filter(w=>w.currency===currency&&w.initialized);if(known.length===2)text+='\nВсего '+currency+': '+money(known.reduce((n,w)=>n+w.amount,0),currency);}
  const capital=ws.find(x=>x.wallet==='capital'&&x.currency==='RUB');
- if(s.goal&&capital.initialized)text+='\n\n🎯 До цели: '+money(Math.max(0,s.goal-capital.amount))+' · '+Math.min(100,Math.floor(capital.amount/s.goal*100))+'%';
+ if(s.goal&&capital?.initialized)text+='\n\n🎯 До цели: '+money(Math.max(0,s.goal-capital.amount))+' · '+Math.min(100,Math.floor(capital.amount/s.goal*100))+'%';
  return text;
 }
 export function draftText(p){
- const text=p.amend?'Исправить проведённую операцию. Прежняя запись остаётся в истории.':p.reversal_of?'Отменить последнюю запись отдельной корректировкой? История сохранится.':p.actions.map(a=>{
+ const describe=actions=>actions.map(a=>({income:'Доход',expense:'Расход',transfer:'Перевод',opening:'Остаток'}[a.type])+' '+money(a.amount,a.currency)+' · '+walletName(a.wallet)+(a.to?' → '+walletName(a.to):'')).join('; ');
+ const text=p.amend?'Исправить проведённую операцию'+(p.original_at?' от '+new Date(p.original_at+10800000).toISOString().slice(0,10):'')+'.\nБыло: '+(p.original_actions?describe(p.original_actions):'состав прежней операции не сохранён; сверяй изменение кошельков ниже')+'\nСтанет: '+describe(p.actions)+'\nПрежняя запись остаётся в истории.':p.reversal_of?'Отменить последнюю запись отдельной корректировкой? История сохранится.':p.actions.map(a=>{
  const before=p.before?.find(w=>w.wallet===a.wallet&&w.currency===a.currency)?.amount;
  if(a.type==='opening')return `${walletName(a.wallet)}: ${before==null?'остаток неизвестен':money(before,a.currency)} → ${money(a.amount,a.currency)}\nЭто установка правильного остатка, не новый доход.`;
  return `${a.type==='income'?'+':a.type==='expense'?'−':'Перевод'} ${money(a.amount,a.currency)} · ${walletName(a.wallet)}${a.to?' → '+walletName(a.to):''}${a.note?' · '+a.note:''}`;
@@ -105,10 +107,10 @@ export function draftText(p){
 }
 
 export async function amendProposal(env,id,target,raw,now,options={}){
- const original=await one(env,'SELECT t.id,t.kind,m.actions,m.effective_at FROM transactions t LEFT JOIN operation_meta m ON m.tx_id=t.id WHERE t.id=? AND NOT EXISTS(SELECT 1 FROM transactions r WHERE r.reversal_of=t.id)',target);
+ const original=await one(env,'SELECT t.id,t.kind,t.at,m.actions,m.effective_at FROM transactions t LEFT JOIN operation_meta m ON m.tx_id=t.id WHERE t.id=? AND NOT EXISTS(SELECT 1 FROM transactions r WHERE r.reversal_of=t.id)',target);
  if(!original)throw Error('already_reversed');if(original.kind.includes('opening'))throw Error('use_set_balance');
  const entries=original.kind==='amend'&&original.actions?changes(JSON.parse(original.actions),await balances(env)):await all(env,'SELECT wallet,currency,delta FROM entries WHERE tx_id=?',target);
- options.effective_at=original.effective_at??options.effective_at??now;
+ options.effective_at=original.effective_at??options.effective_at??now;options.original_actions=original.actions?JSON.parse(original.actions):null;options.original_at=original.at;
  return propose(env,id,raw,now,{id:target,entries},{...options,amend:true});
 }
 

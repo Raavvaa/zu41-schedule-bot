@@ -21,6 +21,21 @@ export function groundedActions(actions,text,evidence,contextAmounts=[]){
  for(const a of ns)for(const b of ns){known.add(a+b);known.add(Math.abs(a-b));}
  return actions.every(a=>known.has(a.amount));
 }
+// Two allocations of one income have the same wallet deltas as one income
+// followed by a transfer. Canonicalize only that equivalent, single-currency form.
+export function canonicalIncomeAllocation(actions){
+ if(actions.length===2){
+  const income=actions.find(a=>a.type==='income'&&a.wallet==='capital'),transfer=actions.find(a=>a.type==='transfer'&&a.wallet==='capital'&&a.to==='pocket');
+  if(income&&transfer&&income.currency===transfer.currency&&transfer.amount<=income.amount){
+   const result=[{...income,wallet:'pocket'}],remaining=income.amount-transfer.amount;
+   if(remaining)result.push({...transfer,wallet:'pocket',to:'capital',amount:remaining,note:'Распределение полученного дохода'});
+   return result;
+  }
+ }
+ if(actions.length<2||actions.some(a=>a.type!=='income')||new Set(actions.map(a=>a.currency)).size!==1||new Set(actions.map(a=>a.wallet)).size!==2)return actions;
+ const total=actions.reduce((n,a)=>n+a.amount,0),capital=actions.filter(a=>a.wallet==='capital').reduce((n,a)=>n+a.amount,0),currency=actions[0].currency;
+ return [{type:'income',wallet:'pocket',currency,amount:total,note:actions.map(a=>a.note).filter(Boolean).join('; ').slice(0,160)},{type:'transfer',wallet:'pocket',to:'capital',currency,amount:capital,note:'Распределение полученного дохода'}];
+}
 export function operationDate(value,text,now){
  const today=new Date(now+10800000).toISOString().slice(0,10);
  if(!value)return /вчера/iu.test(text)?Date.parse(today+'T12:00:00+03:00')-86400000:now;

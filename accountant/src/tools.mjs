@@ -6,7 +6,7 @@ export function redactSecrets(text,env={}){
 }
 export async function ledgerReport(env,days,now){
  if(!Number.isInteger(days)||days<1||days>90)throw Error('report_period');
- return all(env,`SELECT e.wallet,e.currency,sum(CASE WHEN e.delta>0 THEN e.delta ELSE 0 END)/100.0 AS incoming,sum(CASE WHEN e.delta<0 THEN -e.delta ELSE 0 END)/100.0 AS outgoing,sum(e.delta)/100.0 AS net FROM entries e JOIN transactions t ON t.id=e.tx_id LEFT JOIN operation_meta m ON m.tx_id=t.id WHERE COALESCE(m.effective_at,t.at)>=? AND t.kind NOT LIKE '%opening%' AND NOT EXISTS(SELECT 1 FROM transactions orig WHERE orig.id=t.reversal_of AND orig.kind LIKE '%opening%') GROUP BY e.wallet,e.currency`,now-days*86400000);
+ return all(env,`SELECT e.wallet,e.currency,sum(CASE WHEN e.delta>0 THEN e.delta ELSE 0 END)/100.0 AS incoming,sum(CASE WHEN e.delta<0 THEN -e.delta ELSE 0 END)/100.0 AS outgoing,sum(e.delta)/100.0 AS net FROM entries e JOIN transactions t ON t.id=e.tx_id WHERE e.tx_id IN (SELECT tx_id FROM operation_meta WHERE effective_at>=? UNION ALL SELECT id FROM transactions old WHERE at>=? AND NOT EXISTS(SELECT 1 FROM operation_meta WHERE tx_id=old.id)) AND t.kind NOT LIKE '%opening%' AND NOT EXISTS(SELECT 1 FROM transactions orig WHERE orig.id=t.reversal_of AND orig.kind LIKE '%opening%') GROUP BY e.wallet,e.currency`,now-days*86400000,now-days*86400000);
 }
 export async function addReminder(env,text,at,now){
  const due=Date.parse(at);if(typeof text!=='string'||!text.trim()||text.length>200||!Number.isFinite(due)||due<=now||due>now+90*86400000||!/(?:Z|[+-]\d{2}:\d{2})$/.test(at))throw Error('reminder_input');

@@ -113,3 +113,76 @@ D1 instances during this review. Deployment remains blocked on owner approval.
    the bot forever. Monetary progress is appended deterministically. Digest and
    proactive calls share the daily budget. Maintenance observes invocation limits.
    Validation: 79 isolated tests, including skip, fatigue and budget exhaustion.
+
+8. Final local gate: 91 tests pass. All eight migration files were applied to a
+   temporary local D1 with Wrangler; a second application found no pending
+   migrations. Added date indexes keep current-period reads bounded by the
+   requested period. The independent review workflow has only the existing Groq
+   credential, fake Telegram transport and disposable D1. It has no deployment
+   credentials and does not dispatch worker-cache.yml.
+
+The live harness measures at least 30 actual model-response turns, latency,
+model-call count, tokens, repeated replies, clarification turns, scenario success,
+voice confirmation steps and retained facts. Its result must be taken from the
+workflow log; local mock tests are not a substitute. No latency target is claimed
+until measured. Provider rate limits can stop the live gate.
+https://console.groq.com/docs/rate-limits
+
+Deployment preparation now uses tracked D1 migrations and requires the dedicated
+branch plus ACCOUNTANT_APPROVED_SHA matching the checked-out commit. No remote
+migration, deployment, webhook change or production dialogue was performed in
+this review. The existing deployment workflow is unchanged. Future release must
+first receive the owner's approval of the diff and successful isolated CI.
+Production financial probes were removed from the deployment script. Owner-only
+nonfinancial delivery checks remain, with message IDs removed from log output.
+
+Rollback: redeploy the previously verified source SHA after approval. Additive
+schema remains. Preserve data and never run down migrations. New facts/digest are
+ignored by old code; notes entered during a rollback need reconciliation on a
+later upgrade. Existing financial history is never deleted by migration.
+
+Final audit additionally reproduced and fixed a missed lock reacquisition after
+the final backoff, and a lost acknowledgment when a nonfinancial tool succeeded
+but the next model round failed. Amendment cards now show the original and
+replacement operation as well as wallet changes, with correction-specific wording.
+
+A final privacy regression reproduced an unredacted digest request. The daily
+summary now uses the same secret and owner-identifier redaction as dialogue and
+proactive calls, before the model request and before digest persistence.
+
+Two further regression fixtures cover a missing capital-wallet row and undo of
+a committed amendment. The latter previously selected an older unrelated
+operation; undo now targets the latest unreversed ordinary operation or amendment.
+
+The first completed live run passed 13 scenarios, then rejected the model
+allocation shape in the remainder-split scenario. Single-currency income
+allocations across both wallets are now canonicalized to one income plus one
+transfer, preserving wallet deltas. The complete live gate must be rerun; this
+partial run does not establish final model accuracy or latency.
+
+The next live attempt passed six scenarios, then produced two prose responses
+instead of a split proposal. Complete event prose now prioritizes the required
+financial-tool retry before false-receipt repair; an isolated regression proves
+that the retry sends tool_choice=required and excludes respond. Equivalent
+capital-first allocations are also normalized without changing wallet deltas.
+
+A live required-tool retry exposed HTTP 400 tool_use_failed on round two.
+Recovery previously applied only to round one. One format recovery is now allowed
+on any round with budget remaining; required-tool mode stays required and its
+repair instruction does not invite prose. A replay test reproduces that sequence.
+
+The subsequent live run reached a provider 429 during format recovery. The review
+is not release-ready. The harness reports only rate-limit scope/timing and
+response-category metadata to distinguish provider quota from dialogue defects;
+it does not log conversation text, financial amounts or provider identifiers.
+
+Diagnostics identified a minute-token limit (retry-after six seconds), not a
+daily quota. The model also classified the repeated fixture as an existing record:
+the preceding independent slang scenario had already committed the same income.
+The remainder scenario now starts from its own synthetic opening ledger. Genuine
+post-confirmation acknowledgments remain tested against the committed operation.
+The prompt clarifies that equal amounts alone are not webhook deduplication.
+
+Computed goal differences also preserve cent precision; a missing wallet row
+keeps the currency total incomplete even if the surviving wallet is initialized.
+Both cases were reproduced on the temporary database before the fix.
