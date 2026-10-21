@@ -195,9 +195,9 @@ export async function sendPending(env,now=Date.now(),deadline=Date.now()+23000){
   }
  }finally{await unlock(env,'send',token);}
 }
-export async function drain(env,now=Date.now()){
+export async function drain(env,now=Date.now(),limits=null){
  env=requestEnv(env);
- const started=Date.now(),deadline=started+28000,interpretUntil=started+19000;
+ const started=Date.now(),deadline=limits?.deadline??started+28000,interpretUntil=limits?.interpretUntil??started+19000;
  let token;
  // A concurrent webhook waits for the current turn and takes over instead of
  // abandoning its update until the next Cron. Every waiter has its own budget.
@@ -229,6 +229,8 @@ export async function drain(env,now=Date.now()){
    catch(e){if(e.message==='request_budget'){env.REQUEST_BUDGET.reserve=0;await run(env,"UPDATE updates SET state='pending' WHERE id=?",u.id);break;}await reply(env,u.id,'Не удалось закончить запрос, брат. Проверь баланс перед повторной записью; подтверждённый журнал сохранён.',clock);await run(env,"UPDATE updates SET state='failed',payload='{}' WHERE id=?",u.id);}
   }
  }finally{env.REQUEST_BUDGET.reserve=0;await unlock(env,'dialog',token);}
+ // Close the empty-queue/unlock race within the original invocation budget.
+ if(Date.now()<interpretUntil-1000&&requestRemaining(env)>=18&&await one(env,"SELECT id FROM updates WHERE state='pending' LIMIT 1"))return drain(env,Date.now(),{deadline,interpretUntil});
  await sendPending(env,Date.now(),deadline);
 }
 export async function nudge(env,now=Date.now()){

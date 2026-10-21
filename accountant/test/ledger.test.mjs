@@ -281,3 +281,13 @@ test('crash after draft creation replays its exact card without model reinferenc
  await db.prepare('INSERT INTO updates(id,payload,created_at) VALUES(?,?,?)').bind(id,JSON.stringify({update_id:id,message:{text:'получил 250 рублей в карманные'}}),Date.now()).run();
  modelResult={plain:'Совсем другой ответ'};await call('/test/drain',{now:Date.now()});assert.equal(groqCalls,calls);assert.deepEqual(JSON.parse((await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(id)).first()).payload),initial);assert.match(sends.at(-1).text,/250/);
 });
+
+// Regression fixtures below are synthetic, not owner balances or chat exports.
+test('transaction words survive incidental correction vocabulary',async()=>{
+ modelResult={tool:'propose_transaction',args:{actions:[action('income','pocket',2700)]}};
+ const id=seq;await text('Сейчас получил 2700 рублей в карманные, исправь описание на подработку');
+ const d=await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(id)).first();assert.ok(d);assert.equal(JSON.parse(d.payload).actions[0].amount,270000);await callback('no:'+id);
+});
+test('thousand suffix handles comma and period directly',async()=>{
+ const {statedAmounts}=await import('../src/brain.mjs');assert.deepEqual(statedAmounts('4.5к, потом 5к.'),[450000,500000]);
+});

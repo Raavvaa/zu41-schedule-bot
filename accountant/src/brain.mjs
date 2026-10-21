@@ -105,7 +105,7 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
   if(name==='propose_transaction'){
    if(!canPropose||stop(text))return {kind:'chat',reply:'Понял, брат. Новую запись не создаю.',actions:[]};
    if(/(?:хочу|хотел бы|планирую).*(?:куп|кросс|потрат|взять)/iu.test(text))return {kind:'wish',reply:'Это пока план покупки. Из карманных думаешь брать или из капитала?',actions:[]};
-   if(correction(text))return clarify('Понял, речь об исправлении. Какой итоговый остаток должен быть? Новый доход не добавляю.');
+   if(!continuation&&!/(?:получил|заработал|поднял|доход|потратил|заплатил|оплатил|купил|расход|перев[её]л|переведи|отложил|добавь)/iu.test(text))return clarify('Это исправление остатка или новая операция? Уточни, что нужно учесть.');
    const a=validate(args.actions);if(a.some(x=>x.type==='opening'))throw Error('brain_invalid');
    const numbers=statedAmounts(evidenceText),known=new Set(numbers);
    if(/остальн|остальное|остаток себе/iu.test(evidenceText))for(const x of numbers)for(const y of numbers)known.add(Math.abs(x-y));
