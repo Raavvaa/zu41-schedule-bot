@@ -1,3 +1,6 @@
+import {dialogState} from './dialog.mjs';
+import {hasAmount,statedAmounts,groundedActions,operationDate,evidenceAmounts} from './amounts.mjs';
+export {hasAmount,statedAmounts} from './amounts.mjs';
 import {guardEvent} from './diagnostics.mjs';
 import {all,one,run,balances,validate,consumeRequest} from './ledger.mjs';
 const field=(type,description,extra={})=>({type,description,...extra});
@@ -7,7 +10,8 @@ const action={type:'object',additionalProperties:false,properties:{type:{type:'s
 export const TOOLS=[
  tool('read_ledger','Прочитать актуальные остатки, последние операции и текущее неподтверждённое предложение.'),
  tool('search_memory','Найти сообщения прошлых разговоров. Это контекст, не источник подтверждённых сумм.',{query:field('string','Фрагмент текста для поиска')}),
- tool('propose_transaction','Предложить НОВЫЙ совершённый доход, расход или перевод. Не исправление ошибки, не текущий остаток, не желание. Ничего не записывает до кнопки подтверждения.',{actions:{type:'array',items:action,minItems:1,maxItems:4}}),
+ tool('propose_transaction','Предложить НОВЫЙ совершённый доход, расход или перевод. Не исправление ошибки, не текущий остаток, не желание. Ничего не записывает до кнопки подтверждения.',{actions:{type:'array',items:action,minItems:1,maxItems:4},evidence:field('string','Точная цитата из текущей реплики с суммой'),date:field('string','Дата YYYY-MM-DD, только если явно указана')},['actions','evidence']),
+ tool('amend_transaction','Исправить уже проведённую ошибочную операцию одной корректировкой после подтверждения.',{tx_id:field('string','ID операции из CURRENT_STATE'),actions:{type:'array',items:action,minItems:1,maxItems:4},evidence:field('string','Точная цитата текущей поправки')}),
  tool('set_balance','Предложить установить фактический остаток или исправить ошибочный. «Сейчас всего / стало / правильно / лишнее записал» — сюда, НЕ новый доход. История сохраняется; подтверждение обязательно.',{wallet,currency,amount:field('string','Названный пользователем правильный итоговый остаток, не разница'),note:field('string','Причина исправления')}),
  tool('undo_transaction','Предложить отмену последней ошибочной записи с подтверждением. Не удаляет историю.'),
  tool('cancel_proposal','Отменить только неподтверждённое предложение. Баланс не меняется. Используй при «нет», «стоп», «не записывай». Не отменяет проведённую операцию.'),
@@ -22,25 +26,20 @@ export const SYSTEM=`Ты личный «Брат-бухгалтер». Обща
 export async function snapshot(env,now){
  const monthStart=Date.parse(new Date(now+10800000).toISOString().slice(0,7)+'-01T00:00:00+03:00');
  const row=await one(env,`SELECT goal/100.0 AS goal,monthly/100.0 AS monthly,
- (SELECT COALESCE(sum(e.delta),0)/100.0 FROM entries e JOIN transactions t ON t.id=e.tx_id WHERE e.wallet='capital' AND e.currency='RUB' AND t.at>=? AND t.kind NOT LIKE '%opening%' AND NOT EXISTS(SELECT 1 FROM transactions orig WHERE orig.id=t.reversal_of AND orig.kind LIKE '%opening%')) AS monthly_saved,
+ (SELECT COALESCE(sum(e.delta),0)/100.0 FROM entries e JOIN transactions t ON t.id=e.tx_id LEFT JOIN operation_meta m ON m.tx_id=t.id WHERE e.wallet='capital' AND e.currency='RUB' AND COALESCE(m.effective_at,t.at)>=? AND t.kind NOT LIKE '%opening%' AND NOT EXISTS(SELECT 1 FROM transactions orig WHERE orig.id=t.reversal_of AND orig.kind LIKE '%opening%')) AS monthly_saved,
  (SELECT json_group_array(json_object('wallet',wallet,'currency',currency,'amount',CASE WHEN initialized=1 THEN amount/100.0 ELSE NULL END,'initialized',initialized)) FROM wallets) AS wallets,
  (SELECT json_group_array(json_object('id',id,'kind',kind,'note',note,'at',at,'wallet',wallet,'currency',currency,'delta',delta)) FROM (SELECT t.id,t.kind,t.note,t.at,e.wallet,e.currency,e.delta/100.0 AS delta FROM transactions t JOIN entries e ON e.tx_id=t.id ORDER BY t.at DESC,t.rowid DESC LIMIT 12)) AS transactions,
  (SELECT json_object('id',id,'payload',payload,'expires_at',expires_at) FROM drafts WHERE state='ready' AND expires_at>? AND revision=settings.revision ORDER BY created_at DESC,rowid DESC LIMIT 1) AS pending,
- (SELECT json_object('id',id,'kind',kind,'note',note,'at',at) FROM transactions ORDER BY at DESC,rowid DESC LIMIT 1) AS last_operation,
+ (SELECT json_object('id',id,'kind',kind,'note',note,'at',at,'actions',(SELECT actions FROM operation_meta WHERE tx_id=transactions.id)) FROM transactions ORDER BY at DESC,rowid DESC LIMIT 1) AS last_operation,
  (SELECT json_object('id',id) FROM drafts WHERE state='cancelled' ORDER BY created_at DESC,rowid DESC LIMIT 1) AS last_cancelled
  FROM settings WHERE id=1`,monthStart,now);
  const wallets=JSON.parse(row.wallets).map(w=>({...w,initialized:!!w.initialized})),transactions=JSON.parse(row.transactions),pending=JSON.parse(row.pending),last=JSON.parse(row.last_operation),cancelled=JSON.parse(row.last_cancelled);
  const totals=Object.fromEntries(['RUB','AZN'].map(currency=>{const ws=wallets.filter(w=>w.currency===currency),known=ws.filter(w=>w.initialized);const total=known.reduce((n,w)=>n+Math.round(w.amount*100),0)/100;return [currency,{amount:known.length===ws.length?total:null,known_amount:total,complete:known.length===ws.length}];}));
  const capital=wallets.find(w=>w.wallet==='capital'&&w.currency==='RUB');
- return {wallets,transactions,totals,monthly_progress:row.monthly_saved,remaining_to_monthly:row.monthly==null?null:Math.max(0,row.monthly-row.monthly_saved),goal:row.goal,monthly:row.monthly,remaining_to_goal:capital?.initialized&&row.goal!=null?Math.max(0,row.goal-capital.amount):null,last_committed_operation:last?{...last,seconds_ago:Math.max(0,Math.floor((now-last.at)/1000))}:null,last_cancelled_proposal:cancelled,pending:pending?{id:pending.id,expires_at:pending.expires_at,proposal:publicProposal(JSON.parse(pending.payload))}:null};
+ return {wallets,transactions,totals,monthly_progress:row.monthly_saved,remaining_to_monthly:row.monthly==null?null:Math.max(0,row.monthly-row.monthly_saved),goal:row.goal,monthly:row.monthly,remaining_to_goal:capital?.initialized&&row.goal!=null?Math.max(0,row.goal-capital.amount):null,last_committed_operation:last?{...last,actions:last.actions?JSON.parse(last.actions)?.map(a=>({...a,amount:a.amount/100})):null,seconds_ago:Math.max(0,Math.floor((now-last.at)/1000))}:null,last_cancelled_proposal:cancelled,pending:pending?{id:pending.id,expires_at:pending.expires_at,proposal:publicProposal(JSON.parse(pending.payload))}:null};
 }
 function publicProposal(p){return {actions:p.actions?.map(a=>({...a,amount:a.amount/100})),entries:p.entries.map(e=>({...e,delta:e.delta/100})),reversal_of:p.reversal_of};}
-export const hasAmount=t=>/\d|(?<![а-яё])(?:ноль|нуль|один|одну|два|две|три|четыр|пять|пяти|шесть|шести|семь|семи|восемь|восьми|девять|девяти|десять|сто|двести|триста|сот|тысяч|тыщ|полтор|половин|тр[её]шк|пят[её]рк)[а-яё]*(?![а-яё])/iu.test(t);
-export const correction=t=>/(?:неправиль|ошиб|лишни|исправ|на самом деле|стало\s+\d|заново|удал|обнул|(?:сейчас|всего|остаток)\s+(?:в\s+Сабунчи\s+)?\d)/iu.test(t);
 const stop=t=>/^(?:нет|стоп|не записывай|отмени предложение)(?:[\s,.!]|$)/iu.test(t);
-// Check a numeric target against the user's own amount, never the model's memory.
-export function statedAmounts(text){return [...text.matchAll(/\d+(?:[ \u00a0]\d{3})*(?:[.,]\d{1,2})?\s*((?:тыс(?:яч[аиу]?)?|тыщ|к|млн)(?![а-яё]))?/giu)].map(m=>Math.round(Number(m[0].replace(/[^\d.,]/g,'').replace(',','.'))*(m[1]?/млн/i.test(m[1])?1000000:1000:1)*100));}
-function safeTarget(text,value){const ns=statedAmounts(text);return !ns.length||ns.includes(value);}
 export function unsafeReply(text){
  if(/(?:^|[.!?]\s*)(?:я\s+)?(?:готово|сделано)[.!]?$/iu.test(text.trim()))return true;
  // Negation or attribution applies to the verb, never to the whole reply.
@@ -56,13 +55,13 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
  const settings=await one(env,'SELECT goal,monthly,religion,context FROM settings WHERE id=1');
  let state=await snapshot(env,now);
  const history=await all(env,'SELECT id,role,content,at FROM memory ORDER BY at DESC,rowid DESC LIMIT 24');
- const recentClarify=history.find(x=>x.role==='assistant');
- const continuation=recentClarify?.id.endsWith(':clarify')&&now-recentClarify.at<15*60000&&/^(?:(?:уже|это|в|из|на|рубли|рублей|манаты|манат|RUB|AZN|после|до|покупки|карманные|карманных|капитал|капитала|Сабунчи)[\s,.!]*)+$/iu.test(text);
- const evidenceText=continuation?String(history.find(x=>x.role==='user')?.content??'')+'\n'+text:text;
+ const dialog=await dialogState(env);
+ const continuation=dialog.mode==='awaiting_answer'&&dialog.question?.expires_at>now&&/^(?:(?:уже|это|в|из|на|рубли|рублей|манаты|манат|RUB|AZN|после|до|покупки|карманные|карманных|капитал|капитала|Сабунчи)[\s,.!]*)+$/iu.test(text);
+ const evidenceText=continuation?String(dialog.question.payload?.evidence??'')+'\n'+text:text;
  const canPropose=hasAmount(text)||continuation;
  let remainingHistory=6000;const contextHistory=history.filter(x=>{remainingHistory-=Math.min(x.content.length,800);return remainingHistory>=0;}).reverse().map(x=>({role:x.role,content:x.content.slice(0,800)}));
  const preferences={...settings,goal:settings.goal==null?null:settings.goal/100,monthly:settings.monthly==null?null:settings.monthly/100};
- const messages=[{role:'system',content:SYSTEM},{role:'system',content:'CURRENT_STATE='+JSON.stringify(state)+'\nPREFERENCES='+JSON.stringify(preferences)+'\nOWNER_BACKGROUND_UNTRUSTED='+String(env.OWNER_CONTEXT??'').slice(0,1500)},...contextHistory,{role:'user',content:text.slice(0,2500)}];
+ const messages=[{role:'system',content:SYSTEM},{role:'system',content:'CURRENT_STATE='+JSON.stringify(state)+'\nDIALOG_STATE='+JSON.stringify(dialog)+'\nPREFERENCES='+JSON.stringify(preferences)+'\nOWNER_BACKGROUND_UNTRUSTED='+String(env.OWNER_CONTEXT??'').slice(0,1500)},...contextHistory,{role:'user',content:text.slice(0,2500)}];
  const clarify=t=>({kind:'clarify',reply:t,actions:[]});
  let lastCall='',repairUsed=false,requireTool=false;
  const eventRequest=hasAmount(text)&&/(?:получил|заработал|поднял|потратил|заплатил|оплатил|купил|перев[её]л)/iu.test(text)&&!/(?:хочу|планирую|не покупал|не получил|не потратил|если)/iu.test(text);
@@ -94,7 +93,7 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
   if(!Array.isArray(message.tool_calls)||message.tool_calls.length!==1)throw Error('brain_invalid');
   const call=message.tool_calls[0],name=call.function?.name;let args;try{args=JSON.parse(call.function.arguments);}catch{throw Error('brain_invalid');}
   if(!TOOLS.some(t=>t.function.name===name)||!args||typeof args!=='object')throw Error('brain_invalid');
-  const signature=name+JSON.stringify(args);if(signature===lastCall&&!repairUsed)return clarify('Похоже, я повторяюсь. Что нужно сейчас: посмотреть записи или исправить их?');lastCall=signature;
+  const signature=name+JSON.stringify(args);if(signature===lastCall)return clarify('Похоже, я повторяюсь. Что нужно сейчас: посмотреть записи или исправить их?');lastCall=signature;
   if(name==='respond'){
    if(!['chat','clarify','wish','balance','status','history'].includes(args.kind)||typeof args.text!=='string')throw Error('brain_invalid');
    if(unsafeReply(args.text)){if(await repair('false_receipt',call))continue;return clarify('Не понял, уточни, что нужно сделать.');}
@@ -104,20 +103,19 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
   if(name==='set_balance'){
    if(!canPropose)return clarify('Какой правильный остаток поставить и в каком кошельке, брат?');
    const raw={type:'opening',wallet:args.wallet,currency:args.currency,amount:args.amount,note:args.note??'Исправление остатка'};const a=validate([raw])[0];
-   if(!safeTarget(evidenceText,a.amount))return clarify('Назови именно правильный итоговый остаток, брат. Разницу отдельно прибавлять не буду.');
+   if(!evidenceAmounts(evidenceText).includes(a.amount))return clarify('Назови именно правильный итоговый остаток, брат. Разницу отдельно прибавлять не буду.');
    return {kind:'proposal',reply:'',actions:[raw]};
   }
-  if(name==='propose_transaction'){
-   if(!canPropose||stop(text))return {kind:'chat',reply:'Понял, брат. Новую запись не создаю.',actions:[]};
+  if(name==='propose_transaction'||name==='amend_transaction'){
+   if(!canPropose||(stop(text)&&name!=='amend_transaction'))return {kind:'chat',reply:'Понял, брат. Новую запись не создаю.',actions:[]};
    if(/(?:хочу|хотел бы|планирую).*(?:куп|кросс|потрат|взять)/iu.test(text))return {kind:'wish',reply:'Это пока план покупки. Из карманных думаешь брать или из капитала?',actions:[]};
-   if(!continuation&&!/(?:получил|заработал|поднял|доход|потратил|заплатил|оплатил|купил|расход|перев[её]л|переведи|отложил|добавь)/iu.test(text))return clarify('Это исправление остатка или новая операция? Уточни, что нужно учесть.');
+   if(name!=='amend_transaction'&&!continuation&&!(state.pending&&/не\s+.+\s+а\s+/iu.test(text))&&!/(?:получил|заработал|поднял|доход|потратил|заплатил|оплатил|купил|расход|перев[её]л|переведи|отложил|добавь)/iu.test(text))return clarify('Это исправление остатка или новая операция? Уточни, что нужно учесть.');
    const a=validate(args.actions);if(a.some(x=>x.type==='opening'))throw Error('brain_invalid');
-   const numbers=statedAmounts(evidenceText),known=new Set(numbers);
-   if(/остальн|остальное|остаток себе/iu.test(evidenceText))for(const x of numbers)for(const y of numbers)known.add(Math.abs(x-y));
-   // Numeric messages must ground every proposed amount. Word-number/slang
-   // interpretation still belongs to the model and remains a confirmed draft.
-   if(numbers.length&&!hasAmount(evidenceText.replace(/\d+(?:[\s.,]\d+)*\s*(?:тыс(?:яч[аиу]?)?|тыщ|к|млн)?/giu,''))&&a.some(x=>!known.has(x.amount)))return clarify('Сумма предложения не совпала с твоим сообщением. Какую сумму нужно учесть?');
-   return {kind:'proposal',reply:'',actions:args.actions};
+   const contextAmounts=state.pending?.proposal.actions?.map(a=>Math.round(a.amount*100))??state.transactions.map(t=>Math.round(Math.abs(t.delta)*100));
+   const evidence=continuation?evidenceText:args.evidence;
+   if(!groundedActions(a,evidenceText,evidence,contextAmounts)){await guardEvent(env,'invalid_amount',name,now);return clarify('Какая точная сумма относится к этой операции?');}
+   const effective_at=operationDate(args.date,evidenceText,now);
+   return {kind:name==='amend_transaction'?'amend':'proposal',target:args.tx_id,reply:'',actions:args.actions,evidence,effective_at};
   }
   if(name==='undo_transaction'&&!/отмен|ошиб|неправиль|удал|лишни/iu.test(text))return clarify('Нужно отменить последнюю запись?');
   if(name==='undo_transaction')return {kind:'undo',reply:'',actions:[]};
@@ -129,13 +127,14 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
   requireTool=false;
   if(name==='read_ledger'){state=await snapshot(env,now);result=state;}
   if(name==='search_memory'){
-   const query=String(args.query??'').trim().slice(0,100);result=query?await all(env,"SELECT role,content,at FROM memory WHERE content LIKE ? ESCAPE '\\' ORDER BY at DESC,rowid DESC LIMIT 8",'%'+query.replace(/[\\%_]/g,'\\$&')+'%'):[];
+   let query=String(args.query??'').trim().slice(0,20);while(new TextEncoder().encode(query.replace(/[\\%_]/g,'\\$&')).length>46)query=query.slice(0,-1);result=query?await all(env,"SELECT role,content,at FROM memory WHERE content LIKE ? ESCAPE '\\' ORDER BY at DESC,rowid DESC LIMIT 8",'%'+query.replace(/[\\%_]/g,'\\$&')+'%'):[];
   }
   if(name==='cancel_proposal'){
    if(!/нет|стоп|отмен|не записывай|неправиль|ошиб|исправ|удал/iu.test(text))return clarify('Отменить неподтверждённое предложение?');
    // Idempotent and reversible: only a draft, never the ledger.
    const r=await run(env,"UPDATE drafts SET state='cancelled' WHERE state='ready'");
-   state=await snapshot(env,now);result={cancelled:r.meta.changes,ledger_changed:false,snapshot:state};
+   await run(env,"UPDATE dialog_state SET mode='just_cancelled',last_cancelled_draft=pending_draft_id,pending_draft_id=NULL,question=NULL,updated_at=? WHERE id=1",now);
+   state=await snapshot(env,now);result={cancelled:r.meta.changes,ledger_changed:false,snapshot:state,current_state:state,dialog_state:await dialogState(env)};
    if(!/сколько|баланс|было/iu.test(text))return {kind:'chat',reply:r.meta.changes?'Отменил предложение, брат. Деньги не менял.':'Неподтверждённых предложений нет. Если ошиблась последняя запись, могу подготовить её отмену.',actions:[]};
   }
   messages.push({role:'assistant',content:null,tool_calls:[call]},{role:'tool',tool_call_id:call.id,content:JSON.stringify(result)});

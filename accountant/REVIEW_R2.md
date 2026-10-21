@@ -60,3 +60,19 @@ before any deployment or change to deploy/brat-accountant.
 - D1 free database size is 500 MB; queries per invocation are limited to 50.
   History retention needs an explicit bounded policy, not assumed unlimited space.
   https://developers.cloudflare.com/d1/platform/limits/
+
+## Stages prepared
+
+1. Bounded recovery and remaining interpretation gate: 55 isolated unit tests.
+2. Computed per-currency totals, bounded receipt repair, required-tool fallback,
+   metadata-only guard events and private diagnostics: 59 isolated unit tests.
+3. Durable closed questions, evidence/date checks, revision-guarded amendments.
+   An amendment retains the original transaction; repeated amendment reverses
+   the replacement's economic effect, not just the preceding correction delta.
+   Reconciliation preserves the purchase as an expense and shows the combined
+   balance change in one proposal. Explicit incompatible balances ask one
+   discrepancy question. No confirmed financial data was used in tests.
+
+Unit tests mock Groq and Telegram. They do not prove model quality or real
+Telegram delivery. Additive schemas are applied only in disposable Miniflare
+D1 instances during this review. Deployment remains blocked on owner approval.
