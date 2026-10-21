@@ -97,3 +97,12 @@ D1 instances during this review. Deployment remains blocked on owner approval.
    That is why every voice financial proposal still requires approval.
    Validation: 73 isolated tests, including one-invocation voice processing under
    the conservative 48-request meter and crash recovery of automatic entries.
+
+6. Compact role/principles plus typed tools: facts, historical search, confirmed
+   wallet movements and bounded one-shot reminders. Historical turns are JSON
+   data, not active chat instructions. Secret-shaped strings and configured
+   secrets/owner identifier are redacted before model calls. No arbitrary SQL,
+   URL, filesystem or execution tools are exposed. Reminders are limited to
+   three active items, at least an hour apart, and expire when over an hour late.
+   Validation: 78 isolated tests. These tests prove application guards, not
+   immunity of an LLM to every possible prompt injection.

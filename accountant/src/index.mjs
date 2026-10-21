@@ -1,3 +1,4 @@
+import {deliverReminders} from './tools.mjs';
 import {facts,rememberFact,appendFact,summarize} from './memory.mjs';
 import {dialogState,setDialog,answerQuestion,canConfirm,continuationAnswer} from './dialog.mjs';
 import {bugReport} from './diagnostics.mjs';
@@ -30,7 +31,7 @@ function localAction(t){
  const wallet=m[2].toLowerCase()==='капитал'?'capital':'pocket',type={доход:'income',расход:'expense',остаток:'opening',перевод:'transfer'}[m[1].toLowerCase()];
  return [{type,wallet,currency:m[3].toUpperCase(),amount:m[4],...(type==='transfer'?{to:wallet==='pocket'?'capital':'pocket'}:{}),note:m[5]??''}];
 }
-const help='🎙 Можно прислать голосовое до 90 секунд и 2 МБ (до 20 в день). Аудио передаётся Groq для распознавания; перед разбором покажу текст.\n\nБрат, можно писать как говоришь: «получил 4500 руб, трёшку в дом, остальное себе». Я покажу запись и спрошу подтверждение.\n\nЕсли Groq недоступен:\n/доход карманные RUB 3500 смена\n/расход карманные RUB 250 еда\n/перевод карманные RUB 3000\n/остаток капитал RUB 100000\n/цель 500000\n/план 25000\n/отмена — отменить последнюю запись с подтверждением\n/память текст — сохранить важное о себе\n/забыть — очистить контекст разговоров\n\nВсе суммы выше — примеры. Ничего не зачислено. RUB и AZN учитываются отдельно; курсы не выдумываю.\nСвободный текст и короткая история передаются Groq для понимания. ID и токены туда не отправляю.';
+const help='Пиши как говоришь: что получил, потратил или хочешь обсудить. Голосовое — до 90 секунд. Покажу распознанный текст; деньги из голоса запишу только после подтверждения.\n\nОбычные текстовые операции до настроенного порога записываю с кнопкой отмены. Исправления остатка и снятие капитала сначала показываю на проверку.\n\n/память — заметки; /память текст — добавить факт\n/забыть ключ — удалить факт\n/авто 0 — отключить автозапись\n/баг — диагностика для разбора ошибки\nБаланс и история всегда берутся из журнала. RUB и AZN считаются отдельно.';
 export function financialIntent(text){
  const t=text.toLowerCase().replace(/ё/g,'е');
  // Amounts and narrated transactions must reach interpretation, not keyword shortcuts.
@@ -307,5 +308,5 @@ export default {
    return json({ok:false},404);
   }catch{return json({ok:false},503);}
  },
- async scheduled(event,env,ctx){env=requestEnv(env);if(env.ENABLED==='true')ctx.waitUntil((async()=>{await drain(env);if(requestRemaining(env)<20)return;await summarize(env,Date.now());if(requestRemaining(env)<12)return;await nudge(env);await sendPending(env);const now=Date.now();await env.DB.batch([q(env,'DELETE FROM voice_inputs WHERE expires<?',now),q(env,'DELETE FROM memory WHERE at<? OR rowid NOT IN (SELECT rowid FROM memory ORDER BY at DESC,rowid DESC LIMIT 2000)',now-90*86400000),q(env,"DELETE FROM updates WHERE state IN ('done','failed') AND created_at<?",now-30*86400000),q(env,"DELETE FROM drafts WHERE state!='ready' AND created_at<?",now-30*86400000)]);})());}
+ async scheduled(event,env,ctx){env=requestEnv(env);if(env.ENABLED==='true')ctx.waitUntil((async()=>{await drain(env);if(requestRemaining(env)<20)return;await summarize(env,Date.now());if(requestRemaining(env)<12)return;await nudge(env);if(requestRemaining(env)>=10)await deliverReminders(env,Date.now());await sendPending(env);const now=Date.now();await env.DB.batch([q(env,'DELETE FROM voice_inputs WHERE expires<?',now),q(env,'DELETE FROM memory WHERE at<? OR rowid NOT IN (SELECT rowid FROM memory ORDER BY at DESC,rowid DESC LIMIT 2000)',now-90*86400000),q(env,"DELETE FROM updates WHERE state IN ('done','failed') AND created_at<?",now-30*86400000),q(env,"DELETE FROM drafts WHERE state!='ready' AND created_at<?",now-30*86400000)]);})());}
 };

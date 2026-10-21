@@ -30,3 +30,14 @@ test('automatic eligibility bounds whole operations, rejects capital outflow and
  for(const options of [{voice:true},{limit:100000},{proven:false},{reversal:true},{reconcile:true}])assert.equal(automaticEligible([income],{limit:500000,proven:true,...options}),false);
  for(const a of [{...income,wallet:'capital',type:'expense'},{...income,currency:'AZN'},{...income,type:'opening'}])assert.equal(automaticEligible([a],{limit:500000,proven:true}),false);
 });
+
+import {redactSecrets} from '../src/tools.mjs';
+test('model context redacts secrets and owner identifier without corrupting unrelated amounts',()=>{
+ const text=redactSecrets('fake-key 1001 1001000 gsk_syntheticsecret',{GROQ_API_KEY:'fake-key',OWNER_CHAT_ID:'1001'});
+ assert.doesNotMatch(text,/fake-key|gsk_syntheticsecret/);assert.match(text,/1001000/);assert.match(text,/идентификатор/);
+});
+
+test('spoken teen amounts parse and oversized amount lists are bounded',()=>{
+ assert.ok(evidenceAmounts('семнадцать тысяч').includes(1700000));
+ const text=Array.from({length:40},(_,i)=>String(i+1)).join(' ');assert.equal(groundedActions([{amount:100}],text,text),false);
+});
