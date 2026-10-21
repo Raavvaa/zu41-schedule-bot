@@ -1,0 +1,32 @@
+name: Accountant isolated review
+on:
+  push:
+    branches: [feat/accountant-dialogue-r2-20261021]
+    paths: ['accountant/**', '.github/workflows/accountant-review.yml']
+permissions:
+  contents: read
+concurrency:
+  group: accountant-isolated-review
+  cancel-in-progress: true
+jobs:
+  isolated-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --prefix accountant
+      - run: npm test --prefix accountant
+      - name: Generate synthetic Russian fixtures
+        run: |
+          sudo timeout 90 apt-get install -y -qq espeak-ng ffmpeg
+          espeak-ng -v ru -s 135 -w /tmp/accountant-voice.wav 'Брат, покажи мой баланс.'
+          espeak-ng -v ru -s 135 -w /tmp/accountant-income.wav 'Получил двести рублей в карманные за работу.'
+          ffmpeg -y -loglevel error -i /tmp/accountant-voice.wav -c:a libopus /tmp/accountant-voice.ogg
+          ffmpeg -y -loglevel error -i /tmp/accountant-income.wav -c:a libopus /tmp/accountant-income.ogg
+      - name: Isolated live dialogue; no deployment credentials
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: node accountant/test/live-dialog.mjs
