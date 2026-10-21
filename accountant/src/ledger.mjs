@@ -1,3 +1,4 @@
+import {automaticEligible} from './approval.mjs';
 export const q=(env,s,...args)=>env.DB.prepare(s).bind(...args);
 export const one=(env,s,...args)=>q(env,s,...args).first();
 export const run=(env,s,...args)=>q(env,s,...args).run();
@@ -43,9 +44,13 @@ export function changes(actions,ws,reconcile=false){
  return [...ds].map(([k,delta])=>{const [wallet,currency]=k.split(':');return {wallet,currency,delta};});
 }
 export async function propose(env,id,raw,now,reversal=null,options={}){
- const existing=await one(env,'SELECT payload FROM drafts WHERE id=?',id);
- if(existing)return JSON.parse(existing.payload);
- const actions=reversal&&!options.amend?null:validate(raw),ws=await balances(env),s=await one(env,'SELECT revision,(SELECT effective_at FROM operation_meta WHERE tx_id=?) AS original_at FROM settings WHERE id=1',reversal?.id??null);
+ const s=await one(env,`SELECT revision,auto_limit,
+ (SELECT payload FROM drafts WHERE id=?) AS existing,
+ (SELECT effective_at FROM operation_meta WHERE tx_id=?) AS original_at,
+ (SELECT json_group_array(json_object('wallet',wallet,'currency',currency,'amount',amount,'initialized',initialized)) FROM wallets) AS wallets
+ FROM settings WHERE id=1`,id,reversal?.id??null);
+ if(s.existing)return JSON.parse(s.existing);
+ const actions=reversal&&!options.amend?null:validate(raw),ws=JSON.parse(s.wallets);
  if(!reversal&&actions.every(a=>a.type==='opening'&&ws.some(w=>w.wallet===a.wallet&&w.currency===a.currency&&w.initialized&&w.amount===a.amount)))throw Error('unchanged');
  let ds=reversal?reversal.entries.map(x=>({wallet:x.wallet,currency:x.currency,delta:-x.delta})):changes(actions,ws,options.reconcile);
  if(options.amend){
@@ -56,7 +61,7 @@ export async function propose(env,id,raw,now,reversal=null,options={}){
   if(!w||!Number.isSafeInteger(d.delta)||w.amount+d.delta<0)throw Error('insufficient');
   if(!reversal&&actions.every(a=>a.type!=='opening')&&!w.initialized)throw Error('uninitialized');
  }
- const payload={actions,entries:ds,before:ws.map(w=>({wallet:w.wallet,currency:w.currency,amount:w.initialized?w.amount:null})),reversal_of:reversal?.id??null,amend:!!options.amend,effective_at:s.original_at??options.effective_at??now,evidence:options.evidence??null,reconcile:!!options.reconcile};
+ const payload={actions,entries:ds,before:ws.map(w=>({wallet:w.wallet,currency:w.currency,amount:w.initialized?w.amount:null})),reversal_of:reversal?.id??null,amend:!!options.amend,effective_at:s.original_at??options.effective_at??now,evidence:options.evidence??null,reconcile:!!options.reconcile,voice:!!options.voice,auto:automaticEligible(actions,{limit:s.auto_limit,voice:options.voice,proven:options.proven,reversal:!!reversal,reconcile:options.reconcile})};
  await env.DB.batch([
  q(env,"UPDATE drafts SET state='cancelled' WHERE state='ready' AND id!=? AND NOT EXISTS(SELECT 1 FROM drafts WHERE id=?)",id,id),
  q(env,'INSERT OR IGNORE INTO drafts(id,payload,revision,created_at,expires_at) VALUES(?,?,?,?,?)',id,JSON.stringify(payload),s.revision,now,now+15*60000)]);
@@ -106,3 +111,5 @@ export async function amendProposal(env,id,target,raw,now,options={}){
  options.effective_at=original.effective_at??options.effective_at??now;
  return propose(env,id,raw,now,{id:target,entries},{...options,amend:true});
 }
+
+export function receiptText(p){return '✅ Записал.\n\n'+draftText(p).replace(/\n\nПока ничего не записано\. Всё верно\?$/u,'');}

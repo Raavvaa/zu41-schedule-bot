@@ -40,7 +40,7 @@ export async function snapshot(env,now){
  const capital=wallets.find(w=>w.wallet==='capital'&&w.currency==='RUB');
  return {wallets,transactions,totals,monthly_progress:row.monthly_saved,remaining_to_monthly:row.monthly==null?null:Math.max(0,row.monthly-row.monthly_saved),goal:row.goal,monthly:row.monthly,remaining_to_goal:capital?.initialized&&row.goal!=null?Math.max(0,row.goal-capital.amount):null,last_committed_operation:last?{...last,actions:last.actions?JSON.parse(last.actions)?.map(a=>({...a,amount:a.amount/100})):null,seconds_ago:Math.max(0,Math.floor((now-last.at)/1000))}:null,last_cancelled_proposal:cancelled,pending:pending?{id:pending.id,expires_at:pending.expires_at,proposal:publicProposal(JSON.parse(pending.payload))}:null};
 }
-function publicProposal(p){return {actions:p.actions?.map(a=>({...a,amount:a.amount/100})),entries:p.entries.map(e=>({...e,delta:e.delta/100})),reversal_of:p.reversal_of};}
+function publicProposal(p){return {actions:p.actions?.map(a=>({...a,amount:a.amount/100})),entries:p.entries.map(e=>({...e,delta:e.delta/100})),reversal_of:p.reversal_of,voice:!!p.voice};}
 const stop=t=>/^(?:нет|стоп|не записывай|отмени предложение)(?:[\s,.!]|$)/iu.test(t);
 export function unsafeReply(text){
  if(/(?:^|[.!?]\s*)(?:я\s+)?(?:готово|сделано)[.!]?$/iu.test(text.trim()))return true;
@@ -117,7 +117,7 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
    const evidence=continuation?evidenceText:args.evidence;
    if(!groundedActions(a,evidenceText,evidence,contextAmounts)){await guardEvent(env,'invalid_amount',name,now);return clarify('Какая точная сумма относится к этой операции?');}
    const effective_at=operationDate(args.date,evidenceText,now);
-   return {kind:name==='amend_transaction'?'amend':'proposal',target:args.tx_id,reply:'',actions:args.actions,evidence,effective_at};
+   return {kind:name==='amend_transaction'?'amend':'proposal',target:args.tx_id,voice:!!state.pending?.proposal.voice,reply:'',actions:args.actions,evidence,effective_at};
   }
   if(name==='undo_transaction'&&!/отмен|ошиб|неправиль|удал|лишни/iu.test(text))return clarify('Нужно отменить последнюю запись?');
   if(name==='undo_transaction')return {kind:'undo',reply:'',actions:[]};

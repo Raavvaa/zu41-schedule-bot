@@ -14,7 +14,7 @@ async function limitedBody(response){
  try{while(true){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>MAX_BYTES)throw Error('voice_large');parts.push(value);}}finally{await reader.cancel().catch(()=>{});}
  if(!size)throw Error('voice_unclear');return new Blob(parts,{type:'audio/ogg'});
 }
-export async function transcribe(env,v,now){
+export async function transcribe(env,v,now,detailed=false){
  if(!voiceAllowed(v))throw Error('voice_large');
  const day='voice:'+new Date(now+10800000).toISOString().slice(0,10);
  const b=await run(env,'INSERT INTO budgets(day,used) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET used=used+1 WHERE used<20',day);
@@ -26,7 +26,7 @@ export async function transcribe(env,v,now){
  consumeRequest(env);const audio=await limitedBody(await fetch('https://api.telegram.org/file/bot'+env.TELEGRAM_BOT_TOKEN+'/'+p,{redirect:'manual',signal:AbortSignal.timeout(5000)}));
  const form=new FormData();form.set('file',audio,'voice.ogg');form.set('model',VOICE_MODEL);form.set('language','ru');form.set('response_format','verbose_json');form.set('temperature','0');
  consumeRequest(env);const a=await fetch('https://api.groq.com/openai/v1/audio/transcriptions',{method:'POST',headers:{Authorization:'Bearer '+env.GROQ_API_KEY},body:form,redirect:'manual',signal:AbortSignal.timeout(14000)});
- if(a.status===429)throw Error('voice_limit');if(!a.ok)throw Error('voice_unavailable');return recognized(await a.json());
+ if(a.status===429)throw Error('voice_limit');if(!a.ok)throw Error('voice_unavailable');const data=await a.json(),text=recognized(data);return detailed?{text,confident:data.segments.every(s=>s.no_speech_prob<=0.15&&s.avg_logprob>=-0.45&&s.compression_ratio<=1.8)}:text;
  }catch(e){if(e.message==='request_budget')throw e;if(['voice_limit','voice_large','voice_unclear'].includes(e.message))throw e;throw Error('voice_unavailable');}
 }
 export function voiceError(e){return e.message==='voice_large'?'Пришли голосовое до 90 секунд и 2 МБ, брат.':e.message==='voice_limit'?'Брат, достигнут лимит распознавания. Попробуй позже или напиши текстом. Ничего не записано.':e.message==='voice_unclear'?'Не смог уверенно разобрать речь. Запиши ещё раз без шума или напиши текстом — суммы угадывать не буду.':'Не удалось распознать голосовое. Попробуй позже или напиши текстом. Деньги не изменены.';}

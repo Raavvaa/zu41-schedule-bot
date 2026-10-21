@@ -1,24 +1,26 @@
 import {facts,rememberFact,appendFact,summarize} from './memory.mjs';
-import {dialogState,setDialog,answerQuestion} from './dialog.mjs';
+import {dialogState,setDialog,answerQuestion,canConfirm,continuationAnswer} from './dialog.mjs';
 import {bugReport} from './diagnostics.mjs';
-import {q,one,all,run,amount,money,validate,propose,apply,balances,balanceText,draftText,walletName,requestEnv,requestRemaining,consumeRequest,amendProposal} from './ledger.mjs';
+import {q,one,all,run,amount,money,validate,propose,apply,balances,balanceText,draftText,walletName,requestEnv,requestRemaining,consumeRequest,amendProposal,receiptText} from './ledger.mjs';
 import {brain,unsafeReply,statedAmounts} from './brain.mjs';
 import {transcribe,voiceError} from './voice.mjs';
 const json=(v,status=200)=>Response.json(v,{status});
 const day=now=>new Date(now+10800000).toISOString().slice(0,10);
 const menu={keyboard:[['💰 Баланс','✍️ Записать'],['🎯 Цель','📒 История'],['⚙️ Настройки','💬 Поговорим']],resize_keyboard:true};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-const batchable=b=>typeof b.message?.text==='string'&&!b.callback_query&&!b.message.voice&&!/^(?:\/|💰|✍️|🎯|📒|⚙️|💬)/u.test(b.message.text)&&!financialIntent(b.message.text);
+const batchable=b=>typeof b.message?.text==='string'&&!b.callback_query&&!b.message.voice&&!b.voice_source&&!/^(?:\/|💰|✍️|🎯|📒|⚙️|💬)/u.test(b.message.text)&&!financialIntent(b.message.text);
 async function equal(a,b){if(!a||!b)return false;const hash=x=>crypto.subtle.digest('SHA-256',new TextEncoder().encode(x));const [aa,bb]=await Promise.all([hash(a),hash(b)]);let diff=0;new Uint8Array(aa).forEach((x,i)=>{diff|=x^new Uint8Array(bb)[i];});return diff===0;}
 export function owner(env,b){const m=b.message??b.callback_query?.message,from=b.message?.from??b.callback_query?.from;const id=String(env.OWNER_CHAT_ID??'');return /^[1-9]\d*$/.test(id)&&Number.isSafeInteger(Number(id))&&m?.chat?.type==='private'&&String(m.chat.id)===id&&String(from?.id)===id;}
 async function lock(env,name,now,ttl=55000){const token=crypto.randomUUID();const r=await run(env,'INSERT INTO locks VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET token=excluded.token,expires=excluded.expires WHERE expires<=?',name,token,now+ttl,now);return r.meta.changes?token:null;}
 async function unlock(env,name,token){await run(env,'DELETE FROM locks WHERE name=? AND token=?',name,token);}
 async function tg(env,method,body){consumeRequest(env);try{const r=await fetch('https://api.telegram.org/bot'+env.TELEGRAM_BOT_TOKEN+'/'+method,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(8000)});const d=await r.json();return {ok:d.ok===true,id:d.result?.message_id,error:d.error_code??r.status,retry:Math.max(1,Number(d.parameters?.retry_after)||30)};}catch{return {ok:false,error:'uncertain'};}}
-async function reply(env,id,text,now,markup=menu){await run(env,'INSERT OR IGNORE INTO outbox(id,payload,due,created_at) VALUES(?,?,?,?)',String(id),JSON.stringify({text:String(text).slice(0,3900),...(markup?{reply_markup:markup}:{}),link_preview_options:{is_disabled:true}}),now,now);}
+async function reply(env,id,text,now,markup=menu){await run(env,'INSERT OR IGNORE INTO outbox(id,payload,due,created_at) VALUES(?,?,?,?)',String(id),JSON.stringify({text:((env.VOICE_TEXT?'🎤 «'+env.VOICE_TEXT.slice(0,900)+'»\n\n':'')+String(text)).slice(0,3900),...(markup?{reply_markup:markup}:{}),link_preview_options:{is_disabled:true}}),now,now);}
 async function memory(env,id,role,content,now){await run(env,'INSERT OR IGNORE INTO memory VALUES(?,?,?,?)',id,role,content.slice(0,2500),now);}
 async function draft(env,id,actions,now,reversal=null,options={}){
  try{
   const p=options.target?await amendProposal(env,id,options.target,actions,now,options):await propose(env,id,actions,now,reversal,options);
+  const record=await one(env,'SELECT state FROM drafts WHERE id=?',String(id));
+  if(record.state==='applied'||p.auto&&await apply(env,id,now))return reply(env,id,receiptText(p),now,{inline_keyboard:[[{text:'↩️ Отменить',callback_data:'undo:'+id}]]});
   await setDialog(env,'proposal_ready',id,now,{pending:String(id)});const protectedCapital=p.entries.some(x=>x.wallet==='capital'&&x.delta<0)&&!p.actions?.every(a=>a.type==='opening');
   return reply(env,id,(protectedCapital?'⚠️ Брат, это уменьшит капитал Сабунчи. Если трата уже была, учтём честно.\n\n':'')+draftText(p),now,{inline_keyboard:[[{text:protectedCapital?'⚠️ Подтверждаю снятие капитала':'✅ Записать',callback_data:'yes:'+id}],[{text:'❌ Отмена',callback_data:'no:'+id}]]});
  }catch(e){if(e.message==='request_budget')throw e;return reply(env,id,e.message==='unchanged'?'Этот остаток уже сохранён, брат. Повторная запись не нужна.':e.message==='insufficient'?'Брат, по записям в кошельке не хватает денег. Если остаток неверный — напиши «/остаток карманные RUB 5000» с реальной суммой.':e.message==='uninitialized'?'Сначала подтвердим остатки, брат. Пример: /остаток карманные RUB 5000\nДля капитала: /остаток капитал RUB 100000\nЭто примеры формата, не запись денег.':'Не смог надёжно разобрать сумму и кошелёк. Напиши проще: /доход карманные RUB 3500 смена',now);}
@@ -49,6 +51,7 @@ async function recordStatus(env,now){
 }
 async function handleTurn(env,b,now,deadline){
  const id=String(b.update_id),text=(b.message?.text??'').trim(),cb=b.callback_query?.data;
+ if(b.voice_source)env={...env,VOICE_TEXT:text};
  await run(env,'UPDATE settings SET last_seen=?,active=1 WHERE id=1',now);
  if(cb){
   const voice=cb.match(/^(hear|discard):(-?\d+)$/);
@@ -58,13 +61,20 @@ async function handleTurn(env,b,now,deadline){
    if(!row){const previous=await one(env,'SELECT state FROM voice_inputs WHERE id=?',voice[2]);return reply(env,id,previous?.state==='accepted'?'Этот текст уже передан на разбор. Ответ — ниже в переписке. Повторно ничего не записываю.':'Расшифровка отменена или устарела. Пришли новое голосовое.',now);}
    const state=voice[1]==='discard'?'cancelled':'accepted';
    const operations=[q(env,"UPDATE voice_inputs SET state=?,chosen_update=? WHERE id=? AND state='ready'",state,id,voice[2])];
-   if(state==='accepted')operations.push(q(env,"INSERT OR IGNORE INTO updates(id,payload,created_at) SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM voice_inputs WHERE id=? AND state='accepted' AND chosen_update=?)",-Math.abs(Number(id)),JSON.stringify({update_id:-Math.abs(Number(id)),message:{text:row.text}}),now,voice[2],id));
+   if(state==='accepted')operations.push(q(env,"INSERT OR IGNORE INTO updates(id,payload,created_at) SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM voice_inputs WHERE id=? AND state='accepted' AND chosen_update=?)",-Math.abs(Number(id)),JSON.stringify({update_id:-Math.abs(Number(id)),message:{text:row.text},voice_source:true}),now,voice[2],id));
    const chosen=await env.DB.batch(operations);
    if(!chosen[0].meta.changes)return reply(env,id,'Голосовое уже обработано.',now);
    if(state==='cancelled')return reply(env,id,'Отменил расшифровку. Можешь написать исправленный текст.',now);
    return;
   }
   if(b.callback_query.id)await tg(env,'answerCallbackQuery',{callback_query_id:b.callback_query.id});
+  const undo=cb.match(/^undo:(-?\d+)$/);if(undo){
+   const target=undo[1],undoId='revert:'+target;
+   if(await one(env,'SELECT id FROM transactions WHERE reversal_of=?',target))return reply(env,id,'Эта операция уже отменена или исправлена. Повторной отмены нет.',now);
+   const original=await one(env,'SELECT id FROM transactions WHERE id=?',target);if(!original)return reply(env,id,'Запись не найдена.',now);
+   await propose(env,undoId,null,now,{id:target,entries:await all(env,'SELECT wallet,currency,delta FROM entries WHERE tx_id=?',target)});
+   const done=await apply(env,undoId,now);return reply(env,id,done?'↩️ Отменил отдельной корректировкой. История сохранена.\n\n'+await balanceText(env):'Операция уже обработана или баланс изменился.',now);
+  }
   const m=cb.match(/^(yes|no):(-?\d+)$/);if(m){
    if(m[1]==='no'){await run(env,"UPDATE drafts SET state='cancelled' WHERE id=? AND state='ready'",m[2]);await run(env,"UPDATE dialog_state SET mode='just_cancelled',last_cancelled_draft=?,pending_draft_id=NULL,question=NULL,updated_at=? WHERE id=1",m[2],now);return reply(env,id,'Не записываю, брат.',now);}
    const done=await apply(env,m[2],now);return reply(env,id,done?'✅ Записал.\n\n'+await balanceText(env):'Эта запись уже обработана, устарела или баланс изменился. Проверь «Баланс» и предложи запись заново.',now);
@@ -78,14 +88,23 @@ async function handleTurn(env,b,now,deadline){
   return reply(env,id,'Кнопка устарела. Открой /start.',now);
  }
  if(b.message?.voice){
-  const prior=await one(env,'SELECT text,state FROM voice_inputs WHERE id=?',id);
-  if(prior&&prior.state!=='ready')return;
-  let heard=prior?.text;
-  if(!heard){try{heard=await transcribe(env,b.message.voice,now);}catch(e){if(e.message==='request_budget')throw e;return reply(env,id,voiceError(e),now);}
-   await run(env,"INSERT OR IGNORE INTO voice_inputs(id,text,expires) VALUES(?,?,?)",id,heard,now+15*60000);
+  let prior=await one(env,'SELECT text,state,confident FROM voice_inputs WHERE id=?',id);
+  if(prior&&['cancelled','rejected'].includes(prior.state))return reply(env,id,'Расшифровка отменена.',now);
+  if(!prior){let heard;try{heard=await transcribe(env,b.message.voice,now,true);}catch(e){if(e.message==='request_budget')throw e;return reply(env,id,voiceError(e),now);}
+   await run(env,"INSERT OR IGNORE INTO voice_inputs(id,text,expires,confident) VALUES(?,?,?,?)",id,heard.text,now+15*60000,heard.confident?1:0);prior={text:heard.text,state:'ready',confident:heard.confident};
   }
-  return reply(env,id,'🎙 Я услышал:\n'+heard+'\n\nПроверь слова и суммы. Передать на разбор? Пока ничего не записано. Голос распознаёт Groq.',now,{inline_keyboard:[[{text:'✅ Разобрать',callback_data:'hear:'+id}],[{text:'❌ Не так / отмена',callback_data:'discard:'+id}]]});
+  if(prior.confident){
+   const next={update_id:b.update_id,message:{text:prior.text},voice_source:true};
+   await env.DB.batch([q(env,"UPDATE voice_inputs SET state='accepted',chosen_update=? WHERE id=?",id,id),q(env,"UPDATE updates SET payload=? WHERE id=?",JSON.stringify(next),b.update_id)]);return {resume:true};
+  }
+  return reply(env,id,'🎙 Я услышал:\n'+prior.text+'\n\nРаспознавание неуверенное. Проверь слова и суммы. Передать на разбор?',now,{inline_keyboard:[[{text:'✅ Разобрать',callback_data:'hear:'+id}],[{text:'❌ Не так / отмена',callback_data:'discard:'+id}]]});
  }
+ const beforeTurn=await dialogState(env);
+ const approved=!b.voice_source?await canConfirm(env,text,now,beforeTurn):null;
+ if(approved){const p=JSON.parse((await one(env,'SELECT payload FROM drafts WHERE id=?',approved)).payload);const done=await apply(env,approved,now);return reply(env,id,done?receiptText(p):'Предложение уже обработано или изменилось. Проверь баланс.',now,done?{inline_keyboard:[[{text:'↩️ Отменить',callback_data:'undo:'+approved}]]}:menu);}
+ if(beforeTurn.mode==='proposal_ready'||beforeTurn.mode==='awaiting_answer'&&!continuationAnswer(beforeTurn.question,text,now))await setDialog(env,'idle',id,now);
+ const auto=text.match(/^\/авто\s+(\d+(?:[.,]\d{1,2})?)$/);
+ if(auto){const limit=Number(auto[1])===0?0:amount(auto[1]);await run(env,'UPDATE settings SET auto_limit=? WHERE id=1',limit);return reply(env,id,limit?'Автозапись обычных рублёвых операций до '+money(limit)+'. Голос, исправления остатков и снятие капитала требуют подтверждения.':'Автозапись выключена. Буду показывать предложение.',now);}
  if(text==='/баг')return reply(env,id,await bugReport(env),now);
  if(text==='/start'||text==='/help')return reply(env,id,'С Бисмиллях, брат. Я твой личный бухгалтер: капитал Сабунчи отдельно, карманные отдельно.\n\n'+await balanceText(env)+'\n\n'+help,now);
  if(financialIntent(text)==='status')return reply(env,id,await recordStatus(env,now),now);
@@ -96,7 +115,7 @@ async function handleTurn(env,b,now,deadline){
  const goal=text.match(/^\/(цель|план)\s+(\d+(?:[.,]\d{1,2})?)$/);
  if(goal){try{const n=amount(goal[2]);await run(env,`UPDATE settings SET ${goal[1]==='цель'?'goal':'monthly'}=? WHERE id=1`,n);return reply(env,id,'Принял: '+(goal[1]==='цель'?'цель ':'план на месяц ')+money(n)+'. Кошельки не менял.',now);}catch{return reply(env,id,'Нужна положительная сумма в рублях, например /цель 500000.',now);}}
  if(text==='⚙️ Настройки'||text==='/settings'){
-  const s=await one(env,'SELECT * FROM settings WHERE id=1');return reply(env,id,`Поддержка: ${s.proactive?'включена':'выключена'} — пн/ср/сб в ${s.nudge_time} МСК, максимум одно сообщение в день, без догоняющей рассылки.\nРелигиозные напоминания: ${s.religion?'да':'нет'}.\nВремя: /время 19:00\nПауза: /тишина; вернуть: /общайся.`,now,{inline_keyboard:[[{text:s.proactive?'Не писать первым':'Пиши иногда',callback_data:s.proactive?'support:off':'support:on'}],[{text:s.religion?'Без религиозных напоминаний':'Добавить религиозные напоминания',callback_data:s.religion?'religion:off':'religion:on'}],[{text:'Пауза до завтра',callback_data:'quiet:today'}]]});
+  const s=await one(env,'SELECT * FROM settings WHERE id=1');return reply(env,id,`Поддержка: ${s.proactive?'включена':'выключена'} — пн/ср/сб в ${s.nudge_time} МСК, максимум одно сообщение в день, без догоняющей рассылки.\nАвтозапись: до ${money(s.auto_limit)}; /авто 0 — выключить. Голос и исправления — с подтверждением.\nРелигиозные напоминания: ${s.religion?'да':'нет'}.\nВремя: /время 19:00\nПауза: /тишина; вернуть: /общайся.`,now,{inline_keyboard:[[{text:s.proactive?'Не писать первым':'Пиши иногда',callback_data:s.proactive?'support:off':'support:on'}],[{text:s.religion?'Без религиозных напоминаний':'Добавить религиозные напоминания',callback_data:s.religion?'religion:off':'religion:on'}],[{text:'Пауза до завтра',callback_data:'quiet:today'}]]});
  }
  const time=text.match(/^\/время\s+((?:1[0-9]|20):[0-5][0-9])$/);if(time){await run(env,'UPDATE settings SET nudge_time=? WHERE id=1',time[1]);return reply(env,id,'Буду писать в '+time[1]+' МСК по пн/ср/сб.',now);}
  if(text==='/тишина'||text==='/общайся'){await run(env,'UPDATE settings SET proactive=? WHERE id=1',text==='/общайся'?1:0);return reply(env,id,text==='/тишина'?'Хорошо, первым не пишу.':'Хорошо, буду иногда выходить на связь.',now);}
@@ -113,7 +132,7 @@ async function handleTurn(env,b,now,deadline){
   if(!t)return reply(env,id,'Нет записи для отмены.',now);
   return draft(env,id,null,now,{id:t.id,entries:await all(env,'SELECT wallet,currency,delta FROM entries WHERE tx_id=?',t.id)});
  }
- const direct=localAction(text);if(direct)return draft(env,id,direct,now);
+ const direct=localAction(text);if(direct)return draft(env,id,direct,now,null,{proven:true,voice:!!b.voice_source});
  if(text.startsWith('/'))return reply(env,id,help,now);
  if(!text)return reply(env,id,'Пришли текст или голосовое, брат.',now);
  if(text.length>2500)return reply(env,id,'Брат, сократи сообщение до 2500 символов — так надёжнее разберу.',now);
@@ -160,7 +179,7 @@ async function handleTurn(env,b,now,deadline){
   if(newer&&newer.created_at-(b.batch_started??now)<=8000&&batchable(JSON.parse(newer.payload))&&text.length+JSON.parse(newer.payload).message.text.length<2400)return {defer:true};
  }
  
- if(result.kind==='proposal'||result.kind==='amend')return draft(env,id,result.actions,now,null,{target:result.target,evidence:result.evidence,effective_at:result.effective_at});
+ if(result.kind==='proposal'||result.kind==='amend')return draft(env,id,result.actions,now,null,{target:result.target,evidence:result.evidence,effective_at:result.effective_at,proven:!!result.evidence,voice:!!b.voice_source||result.voice});
  if(result.kind==='undo'){
   const t=await one(env,'SELECT * FROM transactions t WHERE reversal_of IS NULL AND NOT EXISTS(SELECT 1 FROM transactions r WHERE r.reversal_of=t.id) ORDER BY at DESC,rowid DESC LIMIT 1');
   if(!t)return reply(env,id,'В журнале пока нет записи для отмены.',now);
@@ -184,9 +203,10 @@ async function handle(env,b,now,deadline){
  // Persist the actual dialogue, including tool receipts and button outcomes.
  // No replayed model inference is treated as a ledger fact.
  // A persisted answer is the result of this update. Never infer another draft on replay.
- if(!await one(env,'SELECT id FROM outbox WHERE id=?',id)){
-  if(await one(env,'SELECT id FROM drafts WHERE id=?',id))await draft(env,id,null,now);
-  else{const result=await handleTurn(env,b,now,deadline);if(result?.defer)return result;}
+ const persisted=await one(env,'SELECT (SELECT id FROM outbox WHERE id=?) AS answer,(SELECT id FROM drafts WHERE id=?) AS draft',id,id);
+ if(!persisted.answer){
+  if(persisted.draft)await draft(env,id,null,now);
+  else{const result=await handleTurn(env,b,now,deadline);if(result?.defer||result?.resume)return result;}
  }
  const text=b.message?.text;
  if(text&&text!=='/забыть')await memory(env,id+':user','user',text,now);
@@ -241,6 +261,7 @@ export async function drain(env,now=Date.now(),limits=null){
    }
    await run(env,"UPDATE updates SET state='processing',lease=? WHERE id=?",clock+55000,u.id);
    try{const result=await handle(env,body,clock,interpretUntil);
+    if(result?.resume){await run(env,"UPDATE updates SET state='pending' WHERE id=?",u.id);continue;}
     if(result?.defer){body.regenerations=(body.regenerations??0)+1;await run(env,"UPDATE updates SET state='pending',payload=? WHERE id=?",JSON.stringify(body),u.id);continue;}
     await run(env,"UPDATE updates SET state='done',payload='{}' WHERE id=?",u.id);
    }

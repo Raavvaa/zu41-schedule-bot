@@ -4,9 +4,9 @@ export async function setDialog(env,mode,id,now,{pending=null,question=null,topi
  await run(env,'UPDATE dialog_state SET mode=?,pending_draft_id=?,question=?,last_topic=?,last_turn=?,updated_at=? WHERE id=1',mode,pending,question?JSON.stringify(question):null,topic,String(id),now);
 }
 export const agreement=t=>/^(?:да|ага|ок|окей|записывай|запиши|подтверждаю|давай)(?:[\s,!]+(?:да|ага|ок|окей|записывай|запиши|подтверждаю|давай))*[.!]*$/iu.test(t.trim())&&t.length<=70;
-export async function canConfirm(env,text,now){
- if(!agreement(text))return null;const d=await dialogState(env);if(d.mode!=='proposal_ready'||now-d.updated_at>300000)return null;
- const p=await one(env,"SELECT * FROM drafts WHERE id=? AND state='ready' AND expires_at>? AND revision=(SELECT revision FROM settings WHERE id=1) AND (SELECT count(*) FROM drafts WHERE state='ready')=1",d.pending_draft_id,now);
+export async function canConfirm(env,text,now,d=null){
+ if(!agreement(text))return null;d??=await dialogState(env);if(d.mode!=='proposal_ready'||now-d.updated_at>300000)return null;
+ const p=await one(env,"SELECT * FROM drafts WHERE id=? AND state='ready' AND expires_at>? AND EXISTS(SELECT 1 FROM outbox WHERE outbox.id=drafts.id AND outbox.state='sent') AND revision=(SELECT revision FROM settings WHERE id=1) AND (SELECT count(*) FROM drafts WHERE state='ready')=1",d.pending_draft_id,now);
  if(!p)return null;const data=JSON.parse(p.payload);if(data.entries.some(e=>e.wallet==='capital'&&e.delta<0))return null;return p.id;
 }
 export function answerQuestion(q,text){
@@ -15,4 +15,10 @@ export function answerQuestion(q,text){
  if(q.type==='purchase_discrepancy'){if(/^(?:только\s+)?(?:расход|покупку|покупка)[.!]*$/u.test(t))return 'expense';if(/^(?:остаток|сверка|исправить остаток)[.!]*$/u.test(t))return 'reconcile';}
  if(q.type==='delete_scope'){if(/^(?:1|предложение|отменить предложение)[.!]*$/u.test(t))return 'cancel';if(/^(?:2|остаток|исправить остаток)[.!]*$/u.test(t))return 'balance';if(/^(?:3|последнюю|последнюю запись|отменить последнюю запись)[.!]*$/u.test(t))return 'undo';}
  return null;
+}
+
+export function continuationAnswer(q,text,now){
+ if(!q||q.expires_at<=now)return false;
+ if(answerQuestion(q,text))return true;
+ return q.type==='financial_detail'&&/^(?:(?:в|из|на|рубли|рублей|манаты|RUB|AZN|карманные|карманных|капитал|капитала|Сабунчи|\d+(?:[.,]\d+)?)[\s,.!]*)+$/iu.test(text);
 }

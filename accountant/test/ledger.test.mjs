@@ -11,9 +11,9 @@ import {voiceAllowed,recognized} from '../src/voice.mjs';
 import {owner,financialIntent} from '../src/index.mjs';
 let mf,db,dir,sends=[],groqCalls=0,modelResult={kind:'chat',reply:'Брат, как прошёл день?',actions:[]},groqError=false,tgError=null;
 let modelQueue=[],requests=[],duringModel=null;
-let asrCalls=0,asrError=0,filePath='voice/file_1.oga',asrText='Я получил 300 рублей в карманные',asrSilence=false;
+let asrCalls=0,asrError=0,filePath='voice/file_1.oga',asrText='Я получил 300 рублей в карманные',asrSilence=false,asrConfident=false;
 const now=Date.now();
-function create(){return new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],d1Persist:dir,bindings:{OWNER_CHAT_ID:'1001',WEBHOOK_SECRET:'test-webhook',TELEGRAM_BOT_TOKEN:'test-token',GROQ_API_KEY:'test-groq',GROQ_MODEL:'openai/gpt-oss-20b',ENABLED:'true'},outboundService:async req=>{const u=new URL(req.url);if(u.hostname==='api.telegram.org'){if(u.pathname.includes('/file/bot'))return new Response(new Uint8Array([79,103,103,83,0]),{headers:{'content-type':'audio/ogg'}});const b=await req.json();if(u.pathname.endsWith('/getFile'))return Response.json({ok:true,result:{file_path:filePath,file_size:5}});if(u.pathname.endsWith('answerCallbackQuery'))return Response.json({ok:true,result:true});if(tgError){const e=tgError;tgError=null;if(e==='uncertain')throw Error('disconnect');return Response.json({ok:false,error_code:e,parameters:{retry_after:4}},{status:e});}sends.push(b);return Response.json({ok:true,result:{message_id:sends.length}});}if(u.hostname==='api.groq.com'){if(u.pathname.endsWith('/audio/transcriptions')){asrCalls++;const form=await req.formData();assert.equal(form.get('model'),'whisper-large-v3-turbo');assert.equal(form.get('language'),'ru');assert.ok(form.get('file') instanceof Blob);assert.equal(form.get('url'),null);if(asrError)return Response.json({error:'rate'},{status:asrError});return Response.json({text:asrText,segments:[{no_speech_prob:asrSilence?0.95:0.01,avg_logprob:-0.2,compression_ratio:1}]});}groqCalls++;const body=await req.json();assert.equal(body.model,'openai/gpt-oss-20b');assert.ok(!JSON.stringify(body).includes('test-token'));assert.ok(!JSON.stringify(body).includes('OWNER_CHAT_ID'));if(groqError)return Response.json({error:'down'},{status:429});requests.push(body);const next=modelQueue.shift()??modelResult;
+function create(){return new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],d1Persist:dir,bindings:{OWNER_CHAT_ID:'1001',WEBHOOK_SECRET:'test-webhook',TELEGRAM_BOT_TOKEN:'test-token',GROQ_API_KEY:'test-groq',GROQ_MODEL:'openai/gpt-oss-20b',ENABLED:'true'},outboundService:async req=>{const u=new URL(req.url);if(u.hostname==='api.telegram.org'){if(u.pathname.includes('/file/bot'))return new Response(new Uint8Array([79,103,103,83,0]),{headers:{'content-type':'audio/ogg'}});const b=await req.json();if(u.pathname.endsWith('/getFile'))return Response.json({ok:true,result:{file_path:filePath,file_size:5}});if(u.pathname.endsWith('answerCallbackQuery'))return Response.json({ok:true,result:true});if(tgError){const e=tgError;tgError=null;if(e==='uncertain')throw Error('disconnect');return Response.json({ok:false,error_code:e,parameters:{retry_after:4}},{status:e});}sends.push(b);return Response.json({ok:true,result:{message_id:sends.length}});}if(u.hostname==='api.groq.com'){if(u.pathname.endsWith('/audio/transcriptions')){asrCalls++;const form=await req.formData();assert.equal(form.get('model'),'whisper-large-v3-turbo');assert.equal(form.get('language'),'ru');assert.ok(form.get('file') instanceof Blob);assert.equal(form.get('url'),null);if(asrError)return Response.json({error:'rate'},{status:asrError});return Response.json({text:asrText,segments:[{no_speech_prob:asrSilence?0.95:0.01,avg_logprob:asrConfident?-0.2:-0.7,compression_ratio:1}]});}groqCalls++;const body=await req.json();assert.equal(body.model,'openai/gpt-oss-20b');assert.ok(!JSON.stringify(body).includes('test-token'));assert.ok(!JSON.stringify(body).includes('OWNER_CHAT_ID'));if(groqError)return Response.json({error:'down'},{status:429});requests.push(body);const next=modelQueue.shift()??modelResult;
 if(duringModel){const hook=duringModel;duringModel=null;await hook();}
 if(next.error)return Response.json({error:{code:next.error}},{status:400});
 if(next.plain)return Response.json({choices:[{message:{role:'assistant',content:next.plain}}]});
@@ -28,7 +28,7 @@ async function proposal(id,actions){return call('/test/propose',{id,actions,now:
 async function apply(id){return call('/test/apply',{id,now:Date.now()});}
 async function ws(){return call('/test/balances',{});}
 const action=(type,wallet,n,currency='RUB',to)=>({type,wallet,amount:String(n),currency,...(to?{to}:{}),note:'local test'});
-before(async()=>{dir=await mkdtemp(path.join(tmpdir(),'brat-'));await build({entryPoints:['test/entry.mjs'],outfile:path.join(dir,'bundle.mjs'),bundle:true,format:'esm',platform:'browser'});mf=create();db=await mf.getD1Database('DB');for(const file of (await readdir('migrations')).filter(x=>x.endsWith('.sql')).sort())await db.exec((await readFile('migrations/'+file,'utf8')).replace(/\n/g,' '));});
+before(async()=>{dir=await mkdtemp(path.join(tmpdir(),'brat-'));await build({entryPoints:['test/entry.mjs'],outfile:path.join(dir,'bundle.mjs'),bundle:true,format:'esm',platform:'browser'});mf=create();db=await mf.getD1Database('DB');for(const file of (await readdir('migrations')).filter(x=>x.endsWith('.sql')).sort())await db.exec((await readFile('migrations/'+file,'utf8')).replace(/\n/g,' '));await db.prepare('UPDATE settings SET auto_limit=0').run();});
 after(async()=>{await mf.dispose();await rm(dir,{force:true,recursive:true});});
 test('money uses exact minor units and rejects ambiguous/unsafe values',()=>{assert.equal(amount('1,23'),123);assert.equal(amount('4500'),450000);for(const x of ['1e8','-1','NaN','1.234','1к','полторы','0'])assert.throws(()=>amount(x));assert.throws(()=>validate([action('expense','evil',1)]));});
 test('private access fails closed before any model call',async()=>{for(const id of [undefined,'', '-1','abc'])assert.equal(owner({OWNER_CHAT_ID:id},{message:{from:{id:1001},chat:{id:1001,type:'private'}}}),false);const before=groqCalls;await text('отдай баланс',1002);assert.equal(groqCalls,before);assert.equal((await db.prepare('SELECT count(*) AS n FROM updates').first()).n,0);assert.equal(owner({OWNER_CHAT_ID:'1001'},{message:{from:{id:1001},chat:{id:-1001,type:'group'}}}),false);});
@@ -367,4 +367,51 @@ test('legacy flat context migrates in complete ordered chunks and facts cap does
  assert.equal((await call('/test/fact',{op:'add',key:'overflow',value:'Новый факт',now:Date.now()})).ok,false);
  assert.equal((await db.prepare('SELECT count(*) n FROM facts').first()).n,50);
  await db.prepare("DELETE FROM facts WHERE key LIKE 'capacity:%' OR key LIKE 'legacy:%'").run();await db.prepare("UPDATE settings SET context='' WHERE id=1").run();
+});
+
+test('automatic small entry has one idempotent undo; large, capital and balance adjustments require approval',async()=>{
+ await db.prepare('UPDATE settings SET auto_limit=500000').run();
+ const before=(await ws()).find(w=>w.wallet==='pocket'&&w.currency==='RUB').amount;
+ modelResult={kind:'proposal',actions:[action('income','pocket',740)]};const id=seq;await text('Получил 740 рублей в карманные');
+ assert.equal((await db.prepare('SELECT state FROM drafts WHERE id=?').bind(String(id)).first()).state,'applied');
+ assert.equal((await ws()).find(w=>w.wallet==='pocket'&&w.currency==='RUB').amount,before+74000);assert.match(sends.at(-1).text,/Записал/);
+ await callback('undo:'+id);await callback('undo:'+id);
+ assert.equal((await ws()).find(w=>w.wallet==='pocket'&&w.currency==='RUB').amount,before);
+ assert.equal((await db.prepare('SELECT count(*) n FROM transactions WHERE reversal_of=?').bind(String(id)).first()).n,1);
+ for(const command of ['/доход карманные RUB 6100','/расход капитал RUB 10','/остаток карманные RUB 1900']){
+  const id=seq;await text(command);assert.equal((await db.prepare('SELECT state FROM drafts WHERE id=?').bind(String(id)).first()).state,'ready');await callback('no:'+id);
+ }
+ await db.prepare('UPDATE settings SET auto_limit=0').run();
+});
+test('text confirmation is fresh, follows a delivered proposal and cannot survive a topic change',async()=>{
+ const id=seq;await text('/доход карманные RUB 63');await text('да, записывай');assert.equal((await db.prepare('SELECT state FROM drafts WHERE id=?').bind(String(id)).first()).state,'applied');
+ const next=seq;await text('/доход карманные RUB 64');modelResult={plain:'Обсудим футбол.'};await text('Давай про футбол');await text('да, записывай');assert.equal((await db.prepare('SELECT state FROM drafts WHERE id=?').bind(String(next)).first()).state,'ready');
+ const expired=seq;await text('/доход карманные RUB 65');await db.prepare('UPDATE dialog_state SET updated_at=?').bind(Date.now()-301000).run();await text('да');assert.equal((await db.prepare('SELECT state FROM drafts WHERE id=?').bind(String(expired)).first()).state,'ready');
+ const capital=seq;await text('/расход капитал RUB 1');await text('да, записывай');assert.equal((await db.prepare('SELECT state FROM drafts WHERE id=?').bind(String(capital)).first()).state,'ready');await callback('no:'+capital);
+});
+test('confident voice becomes a single confirmation card and never automatically writes money',async()=>{
+ asrConfident=true;asrText='Получил 260 рублей в карманные';modelResult={kind:'proposal',actions:[action('income','pocket',260)]};
+ await db.prepare('UPDATE settings SET auto_limit=500000').run();const before=await ws();const id=await voiceMessage();
+ const d=await db.prepare('SELECT state,payload FROM drafts WHERE id=?').bind(String(id)).first();assert.ok(d);assert.equal(d.state,'ready');assert.equal(JSON.parse(d.payload).voice,true);assert.deepEqual(await ws(),before);assert.match(sends.at(-1).text,/🎤/);assert.doesNotMatch(sends.at(-1).text,/Передать на разбор/);
+ await callback('yes:'+id);const after=await ws();await callback('yes:'+id);assert.deepEqual(await ws(),after);
+ asrText='Как дела';modelResult={plain:'Как прошёл день?'};const talk=await voiceMessage();assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(talk)).first(),null);assert.match(sends.at(-1).text,/🎤/);
+ asrConfident=false;await db.prepare('UPDATE settings SET auto_limit=0').run();
+});
+
+test('one invocation handles confident voice within the free request budget',async()=>{
+ asrConfident=true;asrText='Получил 170 рублей в карманные';modelResult={kind:'proposal',actions:[action('income','pocket',170)]};
+ const id=seq++,clock=Date.now();await db.prepare('INSERT INTO updates(id,payload,created_at) VALUES(?,?,?)').bind(id,JSON.stringify({update_id:id,message:{voice:{file_id:'voice_fixture',duration:3,file_size:5}}}),clock).run();
+ const result=await call('/test/drain',{now:clock});assert.ok(result.requests<=48);
+ assert.equal((await db.prepare('SELECT state FROM drafts WHERE id=?').bind(String(id)).first()).state,'ready');
+ assert.equal((await db.prepare('SELECT state FROM updates WHERE id=?').bind(id).first()).state,'done');asrConfident=false;
+});
+test('crash recovery uses persisted automatic action and issues one receipt',async()=>{
+ await db.prepare('UPDATE settings SET auto_limit=500000').run();const id=String(seq++),clock=Date.now();
+ await call('/test/propose',{id,actions:[action('income','pocket',190)],now:clock,options:{proven:true}});
+ const before=(await ws()).find(w=>w.wallet==='pocket'&&w.currency==='RUB').amount,calls=groqCalls;
+ await db.prepare('INSERT INTO updates(id,payload,created_at) VALUES(?,?,?)').bind(Number(id),JSON.stringify({update_id:Number(id),message:{text:'Синтетический повтор'}}),clock).run();
+ await call('/test/drain',{now:clock});assert.equal(groqCalls,calls);
+ assert.equal((await ws()).find(w=>w.wallet==='pocket'&&w.currency==='RUB').amount,before+19000);
+ assert.match(JSON.parse((await db.prepare('SELECT payload FROM outbox WHERE id=?').bind(id).first()).payload).text,/Записал/);
+ await db.prepare('UPDATE settings SET auto_limit=0').run();
 });

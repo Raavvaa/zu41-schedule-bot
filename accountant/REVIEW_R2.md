@@ -85,3 +85,15 @@ D1 instances during this review. Deployment remains blocked on owner approval.
    existing 2500-character ceiling, plus encoding/index overhead). Financial
    history is not purged. This is a conservative policy, not a measured D1 quota
    forecast. The documented free per-database size is 500 MB.
+
+5. Ordinary proven text operations may apply automatically up to the configurable
+   default 5000 RUB (/авто 0 disables). Split income and transfer count the larger
+   of cash flow and transferred flow, avoiding counting one allocation twice.
+   AZN, capital outflow, balance reconciliation, amendments and voice amounts
+   always require prior approval. Undo creates one unique reversal. Text approval
+   requires a delivered, fresh, revision-matching card without an intervening
+   topic. Voice confidence thresholds are application heuristics over documented
+   Whisper segment indicators; they are not proof that a number was heard right.
+   That is why every voice financial proposal still requires approval.
+   Validation: 73 isolated tests, including one-invocation voice processing under
+   the conservative 48-request meter and crash recovery of automatic entries.
