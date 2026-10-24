@@ -42,9 +42,10 @@ export function changes(actions,ws){
  }
  return [...ds].map(([k,delta])=>{const [wallet,currency]=k.split(':');return {wallet,currency,delta};});
 }
-export async function propose(env,id,raw,now,reversal=null){
+export async function propose(env,id,raw,now,reversal=null,sourceMessageId=null){
  const existing=await one(env,'SELECT payload FROM drafts WHERE id=?',id);
  if(existing)return JSON.parse(existing.payload);
+ if(sourceMessageId&&await one(env,"SELECT id FROM drafts WHERE state='applied' AND json_extract(payload,'$.source_message_id')=?",sourceMessageId))throw Error('source_recorded');
  const actions=reversal?null:validate(raw),ws=await balances(env),s=await one(env,'SELECT revision FROM settings WHERE id=1');
  if(!reversal&&actions.every(a=>a.type==='opening'&&ws.some(w=>w.wallet===a.wallet&&w.currency===a.currency&&w.initialized&&w.amount===a.amount)))throw Error('unchanged');
  const ds=reversal?reversal.entries.map(x=>({wallet:x.wallet,currency:x.currency,delta:-x.delta})):changes(actions,ws);
@@ -52,12 +53,14 @@ export async function propose(env,id,raw,now,reversal=null){
   if(!w||!Number.isSafeInteger(d.delta)||w.amount+d.delta<0)throw Error('insufficient');
   if(!reversal&&actions.every(a=>a.type!=='opening')&&!w.initialized)throw Error('uninitialized');
  }
- const payload={actions,entries:ds,before:ws.map(w=>({wallet:w.wallet,currency:w.currency,amount:w.initialized?w.amount:null})),reversal_of:reversal?.id??null};
+ const payload={actions,entries:ds,before:ws.map(w=>({wallet:w.wallet,currency:w.currency,amount:w.initialized?w.amount:null})),reversal_of:reversal?.id??null,...(sourceMessageId?{source_message_id:sourceMessageId}:{})};
+ const unusedSource="(? IS NULL OR NOT EXISTS(SELECT 1 FROM drafts WHERE state='applied' AND json_extract(payload,'$.source_message_id')=?))";
  await env.DB.batch([
- q(env,"UPDATE drafts SET state='cancelled' WHERE state='ready' AND id!=? AND NOT EXISTS(SELECT 1 FROM drafts WHERE id=?)",id,id),
- q(env,'INSERT OR IGNORE INTO drafts(id,payload,revision,created_at,expires_at) VALUES(?,?,?,?,?)',id,JSON.stringify(payload),s.revision,now,now+15*60000)]);
+ q(env,`UPDATE drafts SET state='cancelled' WHERE state='ready' AND id!=? AND NOT EXISTS(SELECT 1 FROM drafts WHERE id=?) AND ${unusedSource}`,id,id,sourceMessageId,sourceMessageId),
+ q(env,`INSERT OR IGNORE INTO drafts(id,payload,revision,created_at,expires_at) SELECT ?,?,?,?,? WHERE ${unusedSource}`,id,JSON.stringify(payload),s.revision,now,now+15*60000,sourceMessageId,sourceMessageId)]);
  // Concurrent/retried inference must display the exact persisted proposal.
- return JSON.parse((await one(env,'SELECT payload FROM drafts WHERE id=?',id)).payload);
+ const saved=await one(env,'SELECT payload FROM drafts WHERE id=?',id);
+ if(!saved)throw Error('source_recorded');return JSON.parse(saved.payload);
 }
 export async function apply(env,id,now){
  const d=await one(env,"SELECT * FROM drafts WHERE id=? AND state='ready' AND expires_at>?",id,now);
