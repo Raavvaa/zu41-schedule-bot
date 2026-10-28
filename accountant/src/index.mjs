@@ -1,6 +1,7 @@
 import {q,one,all,run,amount,money,validate,propose,apply,balances,balanceText,draftText,walletName,requestEnv,requestRemaining,consumeRequest} from './ledger.mjs';
 import {brain,unsafeReply,statedAmounts} from './brain.mjs';
 import {transcribe,voiceError} from './voice.mjs';
+import {conversationOnly} from './conversation.mjs';
 const json=(v,status=200)=>Response.json(v,{status});
 const day=now=>new Date(now+10800000).toISOString().slice(0,10);
 const menu={keyboard:[['💰 Баланс','✍️ Записать'],['🎯 Цель','📒 История'],['⚙️ Настройки','💬 Поговорим']],resize_keyboard:true};
@@ -21,11 +22,11 @@ async function appendNote(env,note){
  if(combined.length>1500)return false;
  await run(env,'UPDATE settings SET context=? WHERE id=1',combined);return true;
 }
-async function draft(env,id,actions,now,reversal=null){
+async function draft(env,id,actions,now,reversal=null,sourceMessageId=null){
  try{
-  const p=await propose(env,id,actions,now,reversal);const protectedCapital=p.entries.some(x=>x.wallet==='capital'&&x.delta<0)&&!p.actions?.every(a=>a.type==='opening');
+  const p=await propose(env,id,actions,now,reversal,sourceMessageId);const protectedCapital=p.entries.some(x=>x.wallet==='capital'&&x.delta<0)&&!p.actions?.every(a=>a.type==='opening');
   return reply(env,id,(protectedCapital?'⚠️ Брат, это уменьшит капитал Сабунчи. Если трата уже была, учтём честно.\n\n':'')+draftText(p),now,{inline_keyboard:[[{text:protectedCapital?'⚠️ Подтверждаю снятие капитала':'✅ Записать',callback_data:'yes:'+id}],[{text:'❌ Отмена',callback_data:'no:'+id}]]});
- }catch(e){if(e.message==='request_budget')throw e;return reply(env,id,e.message==='unchanged'?'Этот остаток уже сохранён, брат. Повторная запись не нужна.':e.message==='insufficient'?'Брат, по записям в кошельке не хватает денег. Если остаток неверный — напиши «/остаток карманные RUB 5000» с реальной суммой.':e.message==='uninitialized'?'Сначала подтвердим остатки, брат. Пример: /остаток карманные RUB 5000\nДля капитала: /остаток капитал RUB 100000\nЭто примеры формата, не запись денег.':'Не смог надёжно разобрать сумму и кошелёк. Напиши проще: /доход карманные RUB 3500 смена',now);}
+ }catch(e){if(e.message==='request_budget')throw e;return reply(env,id,e.message==='source_recorded'?'Эта сумма из разговора уже учтена. Повторно её не добавляю.':e.message==='unchanged'?'Этот остаток уже сохранён, брат. Повторная запись не нужна.':e.message==='insufficient'?'Брат, по записям в кошельке не хватает денег. Если остаток неверный — напиши «/остаток карманные RUB 5000» с реальной суммой.':e.message==='uninitialized'?'Сначала подтвердим остатки, брат. Пример: /остаток карманные RUB 5000\nДля капитала: /остаток капитал RUB 100000\nЭто примеры формата, не запись денег.':'Не смог надёжно разобрать сумму и кошелёк. Напиши проще: /доход карманные RUB 3500 смена',now);}
 }
 function localAction(t){
  const m=t.match(/^\/(доход|расход|остаток|перевод)\s+(капитал|карманные)\s+(RUB|AZN)\s+(\d+(?:[.,]\d{1,2})?)(?:\s+(.*))?$/i);if(!m)return null;
@@ -36,7 +37,7 @@ const help='🎙 Можно прислать голосовое до 90 секу
 export function financialIntent(text){
  const t=text.toLowerCase().replace(/ё/g,'е');
  // Amounts and narrated transactions must reach interpretation, not keyword shortcuts.
- if(/\d|(?:заплатил|потратил|получил|заработал|перевел|добавь|запиши|тысяч|сотен|полторы|тр[её]шк)/u.test(t))return null;
+ if(conversationOnly(t)||/\d|(?:заплатил|потратил|получил|заработал|перевел|добавь|запиши|тысяч|сотен|полторы|тр[её]шк|подар|день рожден|(?<![а-я])др(?![а-я]))/u.test(t))return null;
  if(/^(?:(?:брат|ты|а|ну)\s+)*(?:добавил|записал|зачислил|сохранил|списал|подтвердил|получилось)[\s?!,.]*$/u.test(t))return 'status';
  if(/(?:баланс|сколько.{0,35}(?:денег|денеж|бабок|бабла|остал|накоп|карман|сабунчи|капитал)|(?:денег|денеж|бабок).{0,20}сколько|(?:что|че).{0,20}(?:по деньгам|в кошельк)|скок.{0,20}(?:денег|бабла))/u.test(t))return 'balance';
  return null;
@@ -115,11 +116,11 @@ async function handleTurn(env,b,now,deadline){
   if(!t)return reply(env,id,'Нет записи для отмены.',now);
   return draft(env,id,null,now,{id:t.id,entries:await all(env,'SELECT wallet,currency,delta FROM entries WHERE tx_id=?',t.id)});
  }
- const direct=localAction(text);if(direct)return draft(env,id,direct,now);
- if(text.startsWith('/'))return reply(env,id,help,now);
+ const direct=localAction(text);if(direct&&!conversationOnly(text))return draft(env,id,direct,now);
+ if(text.startsWith('/')&&!direct)return reply(env,id,help,now);
  if(!text)return reply(env,id,'Пришли текст или голосовое, брат.',now);
  if(text.length>2500)return reply(env,id,'Брат, сократи сообщение до 2500 символов — так надёжнее разберу.',now);
- const purchase=/(?:заплатил|потратил|оплатил|купил|расход)/iu.test(text)&&/(?:баланс|остаток|осталось|сейчас)/iu.test(text)&&/\d/u.test(text);
+ const purchase=!conversationOnly(text)&&/(?:заплатил|потратил|оплатил|купил|расход)/iu.test(text)&&/(?:баланс|остаток|осталось|сейчас)/iu.test(text)&&/\d/u.test(text);
  if(purchase&&/карман/iu.test(text)&&text.search(/заплатил|потратил|оплатил|купил|расход/iu)<text.search(/баланс|остаток|осталось|сейчас/iu)&&!/(?:AZN|манат|Сабунчи|капитал|не покупал|не платил|хочу|получил|заработал)/iu.test(text)){
   const ns=statedAmounts(text),w=await one(env,"SELECT amount,initialized FROM wallets WHERE wallet='pocket' AND currency='RUB'");
   if(ns.length===2&&ns[0]>0&&w.initialized&&w.amount-ns[0]===ns[1]&&!/до\s+(?:этой\s+)?(?:покупки|оплаты|обеда|траты|расхода)/iu.test(text))return draft(env,id,[{type:'expense',wallet:'pocket',currency:'RUB',amount:String(ns[0]/100),note:'Расход со сверкой остатка'}],now);
@@ -134,7 +135,7 @@ async function handleTurn(env,b,now,deadline){
  try{result=await brain(env,text==='💬 Поговорим'?'Хочу поговорить. Спроси, как у меня дела.':text,now,deadline);}catch(e){
   if(e.message==='request_budget')throw e;
   const reason={brain_budget:'Сегодня исчерпан лимит обращений бота к модели.',brain_rate:'Groq временно ограничил частоту запросов.',brain_timeout:'Модель не успела ответить.',brain_config:'Нет доступа к модели.',brain_invalid:'Модель вернула ответ, который я не смог проверить.'}[e.message]??'Сервис модели сейчас недоступен.';
-  return reply(env,id,reason+' Журнал сохранён. Можно открыть «Баланс» или «Историю». Для исправления остатка: /остаток капитал RUB сумма. /help — остальные команды.',now);
+  return reply(env,id,reason+' Попробуй чуть позже.',now);
  }
  // A correction arriving while the model was thinking supersedes this unsent
  // inference. The durable update will be joined with the new text on the next turn.
@@ -143,7 +144,7 @@ async function handleTurn(env,b,now,deadline){
   if(newer&&newer.created_at-(b.batch_started??now)<=8000&&batchable(JSON.parse(newer.payload))&&text.length+JSON.parse(newer.payload).message.text.length<2400)return {defer:true};
  }
  
- if(result.kind==='proposal')return draft(env,id,result.actions,now);
+ if(result.kind==='proposal')return draft(env,id,result.actions,now,null,result.source_message_id);
  if(result.kind==='undo'){
   const t=await one(env,'SELECT * FROM transactions t WHERE reversal_of IS NULL AND NOT EXISTS(SELECT 1 FROM transactions r WHERE r.reversal_of=t.id) ORDER BY at DESC,rowid DESC LIMIT 1');
   if(!t)return reply(env,id,'В журнале пока нет записи для отмены.',now);
@@ -157,7 +158,7 @@ async function handleTurn(env,b,now,deadline){
  if(result.kind==='status')return reply(env,id,await recordStatus(env,now),now);
  if(result.kind==='history')return handle(env,{update_id:b.update_id,message:{text:'/history'}},now);
  // Only the program may issue a receipt. Ordinary numeric explanations are allowed.
- if(unsafeReply(result.reply))return reply(env,id,'Я не менял журнал этим сообщением, брат. Могу посмотреть последние записи или подготовить исправление.',now);
+ if(unsafeReply(result.reply))return reply(env,id,'Не смог корректно ответить. Скажи ещё раз, что ты имеешь в виду?',now);
  if(result.kind==='clarify')await memory(env,id+':clarify','assistant',result.reply,now+1);
  return reply(env,id,result.reply,now);
 }
