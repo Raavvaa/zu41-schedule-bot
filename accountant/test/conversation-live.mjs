@@ -43,6 +43,19 @@ try{
   assert.doesNotMatch(reply,/Не буду угадывать|Модель не успела|не смог проверить|Сервис модели|исчерпан лимит/iu);
   return {id,reply};
  }
+ if(process.argv.includes('--opinion')){
+  const opinion=await turn('На праздник подарили 18 тысяч, 9 уже отложил в дом, норм? Как думаешь?');
+  assert.doesNotMatch(opinion.reply,/Какую сумму нужно учесть|итоговый остаток|Всё верно/iu);
+  assert.equal(await count('drafts'),0);assert.equal(await count('transactions'),0);passed++;
+  await turn('Хочу куртку за 8300 рублей.');
+  assert.equal(await count('drafts'),0);assert.equal(await count('transactions'),0);passed++;
+  const proposal=await turn('За смену вышло всего 3700 рублей, запиши в карманные.');
+  const draft=await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(proposal.id)).first();assert.ok(draft);
+  const actions=JSON.parse(draft.payload).actions;assert.equal(actions.length,1);assert.equal(actions[0].type,'income');assert.equal(actions[0].wallet,'pocket');assert.equal(actions[0].currency,'RUB');assert.equal(actions[0].amount,370000);
+  assert.equal(await count('transactions'),0);passed++;
+  await turn('', 'yes:'+proposal.id);assert.equal(await count('transactions'),1);passed++;
+  const ack=await turn('Чётко, спасибо.');assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(ack.id)).first(),null);assert.equal(await count('transactions'),1);passed++;
+ }else{
  await turn('На праздник подарили 6200 рублей. Никуда не добавляй, просто делюсь.');
  assert.equal(await count('drafts'),0);assert.equal(await count('transactions'),0);passed++;
  const recalled=await turn('Сколько мне подарили, помнишь?');
@@ -57,6 +70,7 @@ try{
  const last=await turn('Сколько денег было в последнем пополнении?');
  assert.ok(statedAmounts(last.reply).includes(620000)||/шесть\s+тысяч\s+двести/iu.test(last.reply));
  assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(last.id)).first(),null);assert.equal(await count('transactions'),1);passed++;
+ }
  console.log(JSON.stringify({ok:true,scenarios:passed,groq_calls:calls,reported_total_tokens:tokens,turn_ms:latencies,telegram_network_calls:0,temporary_database:true}));
 }catch{
  console.log(JSON.stringify({ok:false,scenarios:passed,groq_calls:calls,reported_total_tokens:tokens,provider_blocked:blocked,telegram_network_calls:0,temporary_database:true}));

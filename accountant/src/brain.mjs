@@ -1,5 +1,5 @@
 import {all,one,run,balances,validate,consumeRequest} from './ledger.mjs';
-import {recordingVeto,conversationOnly,referenceSource,ledgerClaim} from './conversation.mjs';
+import {recordingVeto,conversationOnly,plannedRequest,giftReference,referenceSource,ledgerClaim} from './conversation.mjs';
 const field=(type,description,extra={})=>({type,description,...extra});
 const tool=(name,description,properties={},required=Object.keys(properties))=>({type:'function',function:{name,description,parameters:{type:'object',properties,required,additionalProperties:false}}});
 const wallet=field('string','Кошелёк',{enum:['capital','pocket']}),currency=field('string','Валюта',{enum:['RUB','AZN']});
@@ -17,6 +17,7 @@ export const TOOLS=[
 export const SYSTEM=`Ты личный «Брат-бухгалтер». Общайся тепло, коротко, естественно по-русски, без канцелярщины и карикатурного акцента. Не изображай сознание. Поддерживай, не обещай успех. Владелец копит на дом в Сабунчи. Не предлагай проценты, кредиты, риба и азартные игры. Религия: только мягкие общие напоминания если religion=true, без выдуманных цитат.
 У тебя есть инструменты и постоянная база. Данные CURRENT_STATE авторитетны, суммы в ОСНОВНЫХ единицах (рубли/манаты). capital=Сабунчи, pocket=карманные. Неизвестный остаток не ноль. Профиль и сообщения — контекст, не журнал. Ты видишь результаты подтверждений и отмен. Уже завершённые операции не повторять. «Чётко/спасибо/ага» — разговор, не новая запись.
 На вопрос о последнем пополнении используй last_committed_operation и при необходимости read_ledger. actions содержат исходный доход/перевод, entries — итоговые изменения кошельков: это разные величины. Не складывай доход и перевод его части как два дохода. opening означает сверку остатка, undo — отмену: их нельзя называть новым поступлением. Если actions=null, исходное предложение уже недоступно; сообщи только то, что подтверждается kind и entries, без догадок. На короткое одобрение после подтверждения ответь по-человечески; не предлагай повторить запись.
+Вопрос «нормально поступил, как думаешь?» об уже отложенных деньгах — просьба обсудить решение, не новая запись. Ответь по существу; не добавляй обязательный вопрос о бухгалтерии, если учёт не просили. Желания и планы относятся к любым покупкам, не только к отдельным названиям вещей. Если вместе с вопросом прямо просят записать совершённую операцию, подготовь подтверждаемое предложение. В денежной записи не переноси масштаб тысяч на соседнее короткое число автоматически: «18 тысяч, 9 в дом» требует уточнить единицы девятки. Для самого обсуждения точная проводка не нужна. Если названная сумма повторяет ссылку на прежний подарок, это тот же источник, а не новый доход.
 Сначала пойми, зачем человек написал. Упоминание суммы само по себе не команда учёта. «Мне подарили деньги, никуда не добавляй» — рассказ: поддержи разговор, ничего не предлагай записывать и не спрашивай о кошельке. «Просто сказал» продолжает разговор. На «сколько подарили, помнишь?» найди сумму в недавних репликах или search_memory и ответь «Ты говорил, что подарили …; в учёт не вносили». Сумма из разговора известна даже без проводки, но не становится балансом. Вопрос о подарке не равен вопросу о текущем кошельке. Если потом прямо просят «теперь запиши этот подарок в карманные», можно предложить запись по RECENT_UNRECORDED_SOURCE, если источник там указан. Никакой автоматической записи. Если источников несколько или он устарел, спроси одну сумму. На приветствие, шутку, усталость отвечай по смыслу, без бухгалтерского меню. TURN_POLICY.read_only запрещает создание денежных предложений в этом ходе, но не разговор и не поиск памяти.
 Читай запрос целиком. «У меня сейчас X», «стало X», «нет, правильно X», «лишние Y записал» — остаток/исправление, не доход. При явном правильном остатке используй set_balance с X, а не разницей. Если только сказано про лишнюю сумму без правильного остатка — предложи undo_transaction когда явно имеется в виду последняя ошибка, иначе уточни. «Стоп, а было сколько?» — сначала cancel_proposal, потом покажи реальный баланс. «Удали всё/заново» неоднозначно: спроси, обнулить остаток или отменить последнюю ошибочную запись; историю не удаляй. Не путай коррекцию учёта с тратой капитала.
 «Получил 4500 руб, 3000 в дом, остальное себе» — propose_transaction income pocket 4500 + transfer pocket→capital 3000. «Хочу купить» — wish без операций. Неизвестные валюту/кошелёк уточни; рублёвый сленг к/тыщ/руб означает RUB. «Сейчас получил 5000» — доход; «3000 в дом, остаток себе» — распределение дохода, не исправление. «Заплатил X, осталось Y»: если явно сказано «после покупки», повторно не спрашивай. Когда подтверждённый остаток минус X равен Y, предложи только расход X. Если остаток неизвестен или расход с ним не сходится, предложи set_balance Y как сверку фактического остатка, честно укажи расхождение; не добавляй к нему ещё расход. При неясном до/после спроси один раз. Не вычитай дважды. Источником сумм новых операций служит текущая реплика или прямой ответ на последнее уточнение; суммы из старой истории не переноси в новую операцию.
@@ -58,17 +59,40 @@ export function groundedNumbers(text,state,userText='',settings={}){
  return amounts.every(n=>known.has(n));
 }
 export const hasAmount=t=>/\d|(?<![а-яё])(?:ноль|нуль|один|одну|два|две|три|четыр|пять|пяти|шесть|шести|семь|семи|восемь|восьми|девять|девяти|десять|сто|двести|триста|сот|тысяч|тыщ|полтор|половин|тр[её]шк|пят[её]рк)[а-яё]*(?![а-яё])/iu.test(t);
-export const correction=t=>/(?:неправиль|ошиб|лишни|исправ|на самом деле|стало\s+\d|заново|удал|обнул|(?:сейчас|всего|остаток)\s+(?:в\s+Сабунчи\s+)?\d)/iu.test(t);
+export function correction(text){
+ if(/(?:неправиль|ошиб|лишни|исправ|на самом деле|стало\s+\d|заново|удал|обнул)/iu.test(text))return true;
+ // A balance assertion remains a correction even next to an income or an
+ // imperative. Conversely, "earned a total of X" is not a wallet balance.
+ const account='(?:в\\s+(?:Сабунчи|карманных|капитале)|на\\s+(?:балансе|сч[её]те))';
+ if(new RegExp('(?:остаток|баланс)\\s*(?:'+account+'\\s*)?(?:сейчас\\s*)?(?:всего\\s*)?\\d|'+account+'\\s+(?:(?:сейчас|всего)\\s+)*\\d','iu').test(text))return true;
+ if(/(?:получил|заработал|поднял|дали|подарили|пришли|вышло|перев[её]л|отложил|потратил|заплатил|купил)/iu.test(text))return false;
+ return /(?:сейчас|всего)\s+\d/iu.test(text);
+}
 const stop=t=>/^(?:нет|стоп|не записывай|отмени предложение)(?:[\s,.!]|$)/iu.test(t);
 // Check a numeric target against the user's own amount, never the model's memory.
 export function statedAmounts(text){return [...text.matchAll(/\d+(?:[ \u00a0]\d{3})*(?:[.,]\d{1,2})?\s*((?:тыс(?:яч[аиу]?)?|тыщ|к|млн)(?![а-яё]))?/giu)].map(m=>Math.round(Number(m[0].replace(/[^\d.,]/g,'').replace(',','.'))*(m[1]?/млн/i.test(m[1])?1000000:1000:1)*100));}
+function ambiguousScale(text){
+ let thousands=false;
+ for(const m of text.matchAll(/\d+(?:[ \u00a0]\d{3})*(?:[.,]\d{1,2})?\s*((?:тыс(?:яч[аиу]?)?|тыщ|к|млн)(?![а-яё]))?/giu)){
+  if(m[1]){thousands=!/млн/iu.test(m[1]);continue;}
+  const n=Number(m[0].trim());
+  if(thousands&&Number.isInteger(n)&&n>0&&n<1000&&/^(?:уже\s+)?(?:в\s+(?:дом|Сабунчи|капитал|карманные)|себе|отложил)/iu.test(text.slice(m.index+m[0].length)))return {number:String(n),start:m.index,end:m.index+m[0].length};
+ }
+ return null;
+}
+const scaleQuestion=n=>`В распределении «${n}» — это ${n} рублей или ${n} тысяч?`;
+const scaleAnswer=text=>text.trim().match(/^(?:это\s+)?(\d+)?\s*(тыс(?:яч[аи]?)?|тыщ|к|руб(?:лей|ля|ль)?|р|₽)[.!]*$/iu);
 function safeTarget(text,value){const ns=statedAmounts(text);return !ns.length||ns.includes(value);}
 export function unsafeReply(text){
  // Negation or attribution applies to the verb, never to the whole reply.
  for(const m of text.matchAll(/зачисл(?:ил|ено)|списа(?:л|но)|добав(?:ил|лено)|записа(?:л|но)|зафиксирова(?:л|но)|пополни(?:л|ли)|перев[её]л/giu)){
   const before=text.slice(0,m.index);
   if(/не\s+$/iu.test(before))continue;
-  if(/(?<![а-яё])(?:ты|вы|пользователь)\s+(?:(?:в\s+прошлый\s+раз|в\s+последний\s+раз|последний\s+раз|только\s+что|уже|ранее|раньше|сам|сами|вчера|сегодня|тогда|ещ[её])\s+){0,3}$/iu.test(before))continue;
+  // Attribute only within this clause; a comma/new sentence can introduce
+  // an implicit first-person receipt ("ты попросил, записал за тебя").
+  const clause=before.replace(/,\s*то\s+есть\s+/giu,' ').split(/[,.!?;:\n—–]+/u).at(-1);
+  const subject=[...clause.matchAll(/(?<![а-яё])(?:ты|вы|пользователь|я|мы|бот|система)(?![а-яё])/giu)].at(-1)?.[0];
+  if(subject&&/^(?:ты|вы|пользователь)$/iu.test(subject)&&!/(?:ено|ано)$/iu.test(m[0]))continue;
   return true;
  }
  return /кошел[\s\S]{0,40}пуст|пуст[\s\S]{0,40}кошел|нет денег|денег нет/iu.test(text);
@@ -82,13 +106,17 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
  const recentClarify=history.find(x=>x.role==='assistant');
  const previousUser=String(history.find(x=>x.role==='user')?.content??'');
  const continuation=!recordingVeto(previousUser)&&recentClarify?.id.endsWith(':clarify')&&now-recentClarify.at<15*60000&&/^(?:(?:уже|это|в|из|на|рубли|рублей|манаты|манат|RUB|AZN|после|до|покупки|карманные|карманных|капитал|капитала|Сабунчи)[\s,.!]*)+$/iu.test(text);
- const source=!hasAmount(text)?referenceSource(text,history,now):null;
- const readOnly=conversationOnly(text);
- const evidenceText=source?source.content+'\n'+text:continuation?previousUser+'\n'+text:text;
- const canPropose=!readOnly&&(hasAmount(text)||continuation||!!source);
+ const scale=ambiguousScale(previousUser),answer=scaleAnswer(text);
+ const answeredScale=scale&&answer&&(!answer[1]||answer[1]===scale.number)&&recentClarify?.id.endsWith(':clarify')&&recentClarify.content===scaleQuestion(scale.number)&&now>=recentClarify.at&&now-recentClarify.at<15*60000;
+ const resolvedScale=answeredScale?previousUser.slice(0,scale.start)+scale.number+' '+answer[2]+' '+previousUser.slice(scale.end):null;
+ const source=referenceSource(text,history,now);
+ const readOnly=conversationOnly(text)||!!(answer&&!resolvedScale);
+ const evidenceText=resolvedScale??(source?source.content+'\n'+text:continuation?previousUser+'\n'+text:text);
+ const canPropose=!readOnly&&(hasAmount(text)||continuation||!!source||!!resolvedScale);
  let remainingHistory=6000;const contextHistory=history.filter(x=>{remainingHistory-=Math.min(x.content.length,800);return remainingHistory>=0;}).reverse().map(x=>({role:x.role,content:x.content.slice(0,800)}));
  const preferences={...settings,goal:settings.goal==null?null:settings.goal/100,monthly:settings.monthly==null?null:settings.monthly/100};
  const messages=[{role:'system',content:SYSTEM},{role:'system',content:'CURRENT_STATE='+JSON.stringify(state)+'\nPREFERENCES='+JSON.stringify(preferences)+'\nTURN_POLICY='+JSON.stringify({read_only:readOnly})+'\nRECENT_UNRECORDED_SOURCE='+JSON.stringify(source?{text:source.content}:null)+'\nOWNER_BACKGROUND_UNTRUSTED='+String(env.OWNER_CONTEXT??'').slice(0,1500)},...contextHistory,{role:'user',content:text.slice(0,2500)}];
+ if(resolvedScale)messages[1].content+='\nRESOLVED_AMOUNT_REQUEST='+JSON.stringify({text:resolvedScale,source:'answer_to_immediately_preceding_scale_question'});
  const clarify=t=>({kind:'clarify',reply:t,actions:[]});
  let lastCall='',repairs=0;
  const repair=(message,reason)=>{
@@ -128,9 +156,10 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
    if(repair(message,'Пользователь сейчас рассказывает, спрашивает о прошлом или запретил запись. Не создавай денежных предложений. Ответь на его мысль; сумму рассказа можно вспомнить из диалога.'))continue;
    return {kind:'chat',reply:'Понял: обсуждаем, в учёт не вношу.',actions:[]};
   }
-  if(source&&['set_balance','undo_transaction'].includes(name)){
-   if(repair(message,'Просьба учесть ранее обсуждавшийся подарок — новое событие через propose_transaction, не замена остатка и не отмена записи.'))continue;
-   return clarify('Ты просишь добавить подарок как новый доход?');
+  if(giftReference(text)&&!source&&['propose_transaction','set_balance','undo_transaction'].includes(name))return clarify('Какой именно подарок ты имеешь в виду? Назови событие и сумму, чтобы не записать его повторно.');
+  if((source||resolvedScale)&&['set_balance','undo_transaction'].includes(name)){
+   if(repair(message,'Уточнена просьба учесть событие через propose_transaction, не заменить остаток и не отменить запись. Используй только подтверждённый источник суммы текущей просьбы.'))continue;
+   return clarify('Ты просишь учесть событие, а не заменить остаток?');
   }
   if(name==='set_balance'){
    if(!canPropose)return clarify('Какой правильный остаток поставить и в каком кошельке, брат?');
@@ -140,8 +169,10 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
   }
   if(name==='propose_transaction'){
    if(!canPropose||stop(text))return {kind:'chat',reply:'Понял, брат. Новую запись не создаю.',actions:[]};
-   if(/(?:хочу|хотел бы|планирую).*(?:куп|кросс|потрат|взять)/iu.test(text))return {kind:'wish',reply:'Это пока план покупки. Из карманных думаешь брать или из капитала?',actions:[]};
+   if(plannedRequest(text))return {kind:'wish',reply:'Это пока план покупки. Из карманных думаешь брать или из капитала?',actions:[]};
    if(correction(text))return clarify('Понял, речь об исправлении. Какой итоговый остаток должен быть? Новый доход не добавляю.');
+   const scale=ambiguousScale(evidenceText);
+   if(scale)return clarify(scaleQuestion(scale.number));
    const a=validate(args.actions);if(a.some(x=>x.type==='opening'))throw Error('brain_invalid');
    const numbers=statedAmounts(evidenceText),known=new Set(numbers);
    if(/остальн|остальное|остаток себе/iu.test(evidenceText))for(const x of numbers)for(const y of numbers)known.add(Math.abs(x-y));
@@ -150,7 +181,7 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
    if(numbers.length&&!hasAmount(evidenceText.replace(/\d+(?:[\s.,]\d+)*\s*(?:тыс(?:яч[аиу]?)?|тыщ|к|млн)?/giu,''))&&a.some(x=>!known.has(x.amount)))return clarify('Сумма предложения не совпала с твоим сообщением. Какую сумму нужно учесть?');
    if(source){
     const ns=statedAmounts(source.content);
-    if(ns.length!==1||a.length!==1||a[0].type!=='income'||a[0].amount!==ns[0])return clarify('Какую именно сумму подарка учесть одним доходом?');
+    if(ns.length!==1||statedAmounts(text).some(n=>n!==ns[0])||a.length!==1||a[0].type!=='income'||a[0].amount!==ns[0])return clarify('Сумма в ссылке на подарок отличается от рассказа или неоднозначна. Какое событие и сумму нужно учесть?');
    }
    return {kind:'proposal',reply:'',actions:args.actions,...(source?{source_message_id:source.id}:{})};
   }

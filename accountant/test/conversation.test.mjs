@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {Miniflare} from 'miniflare';
 import {build} from 'esbuild';
-import {unsafeReply} from '../src/brain.mjs';
+import {unsafeReply,statedAmounts} from '../src/brain.mjs';
 
 // Entirely synthetic conversations, disposable SQLite and fake external APIs.
 let mf,db,dir,seq=1,queue=[],requests=[],defaultReply='Слушаю тебя.',sent=[];
@@ -200,4 +200,97 @@ test('a question naming an earlier amount cannot turn into a new proposal',async
  const r=await turn('В последнем пополнении сколько было, 730 рублей?');
  assert.equal(r.text,'Ты спрашиваешь о прежнем доходе 730 рублей.');
  assert.equal(await count('transactions'),1);assert.equal(await count('drafts'),1);assert.equal(await wallet(),73000);
+});
+
+test('opinion requests reject every money tool and keep the actual conversational answer',async()=>{
+ for(const name of ['propose_transaction','set_balance','undo_transaction']){
+  queue=[tool(name,name==='propose_transaction'?{actions:[action(18000),{...action(9000),type:'transfer',to:'capital'}]}:{wallet:'capital',currency:'RUB',amount:'9000',note:'fixture'}),say('Если оставшегося хватает на твои расходы, такой шаг приближает к дому.')];
+  const r=await turn('На праздник подарили 18 тысяч, 9 уже отложил в дом, норм? Как думаешь?');
+  assert.equal(r.text,'Если оставшегося хватает на твои расходы, такой шаг приближает к дому.');
+  await noMoney();
+ }
+});
+test('opinion and arbitrary planned purchases stay read-only without a product-name whitelist',async()=>{
+ for(const phrase of ['Отложил 9к в Сабунчи, нормально?','Как думаешь, правильно ли я 9 тысяч в дом кинул?','Хочу куртку за 8300','Хочу велосипед за 9100','Планирую аренду за 9400']){
+  queue=[tool('propose_transaction',{actions:[action(9000)]}),say('Давай обсудим, насколько это подходит твоим планам.')];
+  assert.equal((await turn(phrase)).text,'Давай обсудим, насколько это подходит твоим планам.');await noMoney();
+ }
+});
+test('an opinion question bypasses the deterministic expense-and-balance shortcut',async()=>{
+ await db.prepare("UPDATE wallets SET amount=400000 WHERE wallet='pocket' AND currency='RUB'").run();
+ queue=[say('Если это нужная покупка и на остальное хватит, всё разумно.')];
+ const r=await turn('Заплатил 240 рублей за обед, сейчас в карманных 3760 рублей. Нормально?');
+ assert.equal(r.text,'Если это нужная покупка и на остальное хватит, всё разумно.');
+ assert.equal(requests.length,1);assert.equal(await count('drafts'),0);assert.equal(await wallet(),400000);
+});
+test('a direct recording request can accompany an opinion without losing the proposal',async()=>{
+ queue=[tool('propose_transaction',{actions:[action(730)]})];
+ const p=await turn('Получил 730 рублей, запиши в карманные. Как думаешь, хорошая смена?');
+ assert.match(p.text,/Всё верно/);assert.equal(await count('drafts'),1);assert.equal(await count('transactions'),0);
+});
+test('event totals are not automatically interpreted as a balance correction',async()=>{
+ for(const text of ['За смену вышло всего 3700, запиши в карманные.','Дали премию, всего 3700 руб, закинь в дом.','Сейчас получил 3700 рублей.']){
+  queue=[tool('propose_transaction',{actions:[action(3700)]})];
+  const p=await turn(text);assert.match(p.text,/Всё верно/);assert.ok(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(p.id)).first());
+ }
+ assert.equal(await count('transactions'),0);
+});
+test('recording imperatives do not turn a stated final balance into new income',async()=>{
+ for(const text of ['Запиши: сейчас в Сабунчи всего 27400 рублей.','Получил 3700, сейчас остаток 27400, исправь баланс.']){
+  queue=[tool('propose_transaction',{actions:[action(27400)]})];
+  assert.doesNotMatch((await turn(text)).text,/Всё верно/);await noMoney();
+ }
+});
+test('owner-attributed explanations are accepted without accepting a new bot receipt',async()=>{
+ const replies=['Ты подаренные 18 тысяч грамотно распределил и добавил часть в дом.','Половину подарка ты отложил, то есть пополнил копилку.'];
+ for(const reply of replies){assert.equal(unsafeReply(reply),false);queue=[say(reply)];assert.equal((await turn('Как думаешь, разумно поступил?')).text,reply);}
+ for(const reply of ['Ты молодец, записал за тебя.','Ты попросил, добавлено в журнал.','Ты устал, поэтому я уже записал.','Ты говорил, я уже записал. Не переживай.','Записал, не переживай.','Ты попросил. Записал.','Ты попросил — записал.','Ты попросил и добавлено в журнал.'])assert.equal(unsafeReply(reply),true,reply);
+ await noMoney();
+});
+test('explicit gift amount keeps its source and cannot be booked a second time by reference',async()=>{
+ queue=[say('Понял, просто делишься.')];const gift=await turn('На праздник подарили 6200 рублей, пока не записывай.');
+ queue=[tool('propose_transaction',{actions:[action(6200)]})];const p=await turn('Теперь запиши эти 6200 рублей в карманные.');
+ const draft=await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(p.id)).first();assert.ok(draft);
+ assert.equal(JSON.parse(draft.payload).source_message_id,gift.id+':user');
+ await turn('', 'yes:'+p.id);
+ queue=[tool('propose_transaction',{actions:[action(6200)]})];assert.match((await turn('Запиши тот подарок в карманные.')).text,/уже учтена/);
+ assert.equal(await count('transactions'),1);assert.equal(await wallet(),620000);
+});
+test('a repeated reference cannot silently change the source amount',async()=>{
+ queue=[say('Понял.')];await turn('Подарили 6200 рублей, не записывай.');
+ queue=[tool('propose_transaction',{actions:[action(6200)]})];await turn('Теперь запиши этот подарок 7100 рублей в карманные.');await noMoney();
+});
+test('a numbered gift reference still needs an unambiguous recent source',async()=>{
+ for(const [id,n] of [['a',6200],['b',8400]])await db.prepare('INSERT INTO memory VALUES(?,?,?,?)').bind(id,'user',`Подарили ${n} рублей, не записывай.`,Date.now()).run();
+ queue=[tool('propose_transaction',{actions:[action(6200)]})];await turn('Запиши этот подарок 6200 рублей в карманные.');await noMoney();
+});
+test('an ambiguous shorthand is not silently authorized in either scale',async()=>{
+ assert.deepEqual(statedAmounts('18 тысяч, 9'),[1800000,900]);
+ for(const n of [9,9000]){
+  queue=[tool('propose_transaction',{actions:[action(18000),{...action(n),type:'transfer',to:'capital'}]})];
+  const r=await turn('Запиши: получил 18 тысяч, 9 в дом, остальное себе.');
+  assert.match(r.text,/9.*(?:руб|тысяч)/iu);await noMoney();
+ }
+});
+test('explicit split amounts and explicit small ruble amounts remain valid',async()=>{
+ for(const [phrase,n] of [['Запиши: получил 18 тысяч, 9 тысяч в дом, остальное себе.',9000],['Запиши: получил 18 тысяч, 9 рублей в дом, остальное себе.',9]]){
+  queue=[tool('propose_transaction',{actions:[action(18000),{...action(n),type:'transfer',to:'capital'}]})];
+  const r=await turn(phrase);assert.match(r.text,/Всё верно/);assert.equal(await count('transactions'),0);
+ }
+});
+test('one direct answer resolves the scale once without reopening it after a topic change',async()=>{
+ const actions=[action(18000),{...action(9000),type:'transfer',to:'capital'}];
+ queue=[tool('propose_transaction',{actions})];await turn('Запиши: получил 18 тысяч, 9 в дом, остальное себе.');await noMoney();
+ queue=[tool('propose_transaction',{actions})];const p=await turn('9 тысяч');
+ assert.match(p.text,/Всё верно/);assert.equal(await count('drafts'),1);
+ await turn('', 'no:'+p.id);
+ queue=[tool('propose_transaction',{actions}),say('О какой сумме ты сейчас говоришь?')];
+ assert.equal((await turn('тысяч')).text,'О какой сумме ты сейчас говоришь?');assert.equal(await count('drafts'),1);assert.equal(await count('transactions'),0);
+});
+test('a fresh income with a demonstrative is not attached to an earlier gift',async()=>{
+ queue=[say('Понял.')];await turn('Подарили 6200 рублей, не записывай.');
+ queue=[tool('propose_transaction',{actions:[action(730)]})];
+ const p=await turn('Получил за смену 730 рублей, запиши эти 730 в карманные.');
+ const d=JSON.parse((await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(p.id)).first()).payload);
+ assert.equal(d.source_message_id,undefined);assert.equal(d.actions[0].amount,73000);
 });

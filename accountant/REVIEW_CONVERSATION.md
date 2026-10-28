@@ -26,6 +26,38 @@ committed operation. If its draft has expired, original actions/before are null;
 the model cannot reconstruct them from wallet deltas. Questions about past
 operations bypass the current-balance shortcut and cannot create money proposals.
 
+Additional review follow-up (2026-10-28, against `9dca6031b`): twelve targeted
+tests were run before the patch; eight failed and four already passed. The
+failures reproduced opinion requests reaching money tools, a purchase shortcut
+ignoring an opinion request, unlisted planned purchases reaching tools, event
+totals being treated as corrections, over-restricted owner attribution, a lost
+gift source when its amount is repeated, ambiguous numeric gift references,
+and a bare allocation number being accepted at the smaller scale.
+
+The external reviews were not applied verbatim:
+
+- Opinion requests and wishes restrict all money tools and the existing purchase
+  shortcut. The model still writes the response. An opinion does **not** force a
+  question about recording. An explicit instruction to record an actual event
+  can accompany an opinion question.
+- A planned purchase is not tied to a list of product names. This stays a
+  heuristic boundary, not a claim of complete natural-language understanding.
+- `statedAmounts` keeps explicit units. The patch does not authorize both RUB
+  and thousands just because another number used thousands. A bare allocation
+  such as the second number in "18 thousand, 9 to the house" requires one scale
+  question. Its immediate short answer is bound to that request for 15 minutes;
+  a standalone unit after the topic/turn changes cannot replay the request.
+- Event totals may be proposed, while explicit balance/correction statements
+  remain protected even alongside an event or an imperative. The review's broad
+  `explicitRecord` exemption from correction was not adopted.
+- Owner attribution is clause-local; simply having "you" somewhere in a reply
+  does not exempt a new bot receipt. Passive receipts and explicit bot subjects
+  remain rejected. This linguistic check is still imperfect and gets one repair.
+- A direct reference to one recent gift retains its source when the amount is
+  repeated. A different amount or ambiguous source cannot silently create a new
+  record. A newly narrated income is not attached to a prior gift just because
+  it contains a demonstrative.
+
 ## Changes
 
 - Conversational amounts, prices and plans are no longer checked as balances.
@@ -49,7 +81,7 @@ production database queries, deployment, or real Telegram messages.
 
 ## Validation and limits
 
-Executed locally on 2026-10-28: **76/76 tests pass** (53 existing, 23 conversation
+Executed locally on 2026-10-28: **90/90 tests pass** (53 existing, 37 conversation
 tests), syntax checks pass,
 and `git diff --check` passes. Real Groq calls: **0**. Real Telegram calls: **0**.
 The two targeted regressions also ran against the unchanged base and both failed;
@@ -73,6 +105,9 @@ memory search, conversation/support/wishes, false receipts and 429 responses.
 It also covers acknowledgment after confirmation, last-operation lookup,
 split-income versus net-delta semantics, balance corrections, unavailable old
 drafts, and read-only questions that mention an earlier amount.
+The fourteen new tests cover the reviewed opinion/wish, source-binding,
+correction and attribution defects, both interpretations of a bare allocation,
+explicit units, and one-time resolution of a scale question.
 All fixtures and identifiers are synthetic; external APIs are mocked.
 
 A manual real-model smoke script is prepared:
@@ -81,11 +116,22 @@ A manual real-model smoke script is prepared:
 node accountant/test/conversation-live.mjs
 ```
 
+For the current opinion/wish/event-total regression, choose this alternative
+suite **instead of** adding a second quota-consuming run:
+
+```sh
+node accountant/test/conversation-live.mjs --opinion
+```
+
 It needs the existing secret in the execution environment, uses disposable D1
 and fake Telegram, caps Groq HTTP calls at eight, and stops on the first provider
 error. Logs contain aggregate counts/timings, not dialog text or credentials.
 It is not attached to a push workflow. This environment has no Groq credential,
 so real-model understanding/latency and Telegram delivery are not validated.
+
+The live opinion suite checks absence of drafts and preservation of the intended
+event amount, not the quality of advice. Review its conversation separately with
+the owner after an approved release. No live transcript is logged by the harness.
 
 ## Release review
 
