@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {Miniflare} from 'miniflare';
 import {build} from 'esbuild';
+import {unsafeReply} from '../src/brain.mjs';
 
 // Entirely synthetic conversations, disposable SQLite and fake external APIs.
 let mf,db,dir,seq=1,queue=[],requests=[],defaultReply='Слушаю тебя.',sent=[];
@@ -142,4 +143,61 @@ test('ordinary requested income still produces a single confirmable proposal',as
 });
 test('model limit on small talk returns a short availability answer without financial instructions',async()=>{
  queue=[{http:429}];const r=await turn('Как дела?');assert.match(r.text,/ограничил/);assert.doesNotMatch(r.text,/остаток|журнал|\/help|капитал|баланс/iu);assert.equal(requests.length,1);await noMoney();
+});
+
+async function commitFixture(actions,text){
+ queue=[tool('propose_transaction',{actions})];const p=await turn(text);await turn('', 'yes:'+p.id);return p;
+}
+function currentState(){
+ return JSON.parse(requests.at(-1).messages.find(m=>m.content?.startsWith('CURRENT_STATE=')).content.split('\n')[0].slice('CURRENT_STATE='.length));
+}
+test('acknowledgment after confirmation stays conversational and exposes the completed action',async()=>{
+ await commitFixture([action(730)],'Получил 730 рублей, запиши в карманные.');
+ const calls=requests.length;queue=[say('Отлично, брат. На связи!')];const r=await turn('Чётко');
+ assert.equal(r.text,'Отлично, брат. На связи!');assert.equal(requests.length,calls+1);
+ assert.equal(await count('transactions'),1);assert.equal(await count('drafts'),1);
+ assert.equal(currentState().last_committed_operation.actions[0].amount,730);
+});
+test('last addition question reads the committed event and allows attributed past-tense prose',async()=>{
+ assert.equal(unsafeReply('Ты в прошлый раз добавил 730 рублей.'),false);
+ assert.equal(unsafeReply('Я в прошлый раз добавил 730 рублей.'),true);
+ assert.equal(unsafeReply('Ты говорил, я уже записал. Не переживай.'),true);
+ await commitFixture([action(730)],'Получил 730 рублей, запиши в карманные.');
+ const calls=requests.length;queue=[tool('read_ledger'),say('Ты в прошлый раз добавил 730 рублей в карманные.')];
+ const r=await turn('Сколько денег было в последнем пополнении?');
+ assert.equal(r.text,'Ты в прошлый раз добавил 730 рублей в карманные.');assert.equal(requests.length,calls+2);
+ const state=JSON.parse(requests.at(-1).messages.find(m=>m.role==='tool').content);
+ assert.equal(state.last_committed_operation.actions[0].type,'income');
+ assert.equal(state.last_committed_operation.actions[0].amount,730);
+ assert.equal(await wallet(),73000);assert.equal(await count('transactions'),1);assert.equal(await count('drafts'),1);
+});
+test('split operation keeps original income distinct from net wallet deltas',async()=>{
+ await commitFixture([action(730),{...action(300),type:'transfer',to:'capital'}],'Получил 730 рублей, 300 в дом, остальное себе.');
+ queue=[say('Доход был 730 рублей, из него 300 ушли в Сабунчи.')];await turn('Что было в последней операции?');
+ const last=currentState().last_committed_operation;
+ assert.deepEqual(last.actions.map(a=>[a.type,a.amount]),[['income',730],['transfer',300]]);
+ assert.deepEqual(last.entries.map(e=>[e.wallet,e.delta]),[['pocket',430],['capital',300]]);
+ assert.equal(await count('transactions'),1);assert.equal(await count('drafts'),1);
+});
+test('balance correction is exposed as correction, never inferred as an income',async()=>{
+ const p=await turn('/остаток капитал RUB 24100');await turn('', 'yes:'+p.id);
+ queue=[say('Последняя запись — сверка остатка, а не новый доход.')];await turn('Что было в последней записи?');
+ const last=currentState().last_committed_operation;
+ assert.equal(last.kind,'opening');assert.equal(last.actions[0].type,'opening');assert.equal(last.actions[0].amount,24100);
+ assert.equal(last.before.find(w=>w.wallet==='capital'&&w.currency==='RUB').amount,0);
+ assert.equal(await count('transactions'),1);
+});
+test('expired proposal history does not fabricate original actions from net entries',async()=>{
+ await commitFixture([action(730)],'Получил 730 рублей, запиши в карманные.');await db.exec('DELETE FROM drafts');
+ queue=[say('В журнале сохранился доход 730 рублей.')];await turn('Что сохранилось о последней записи?');
+ const last=currentState().last_committed_operation;
+ assert.equal(last.actions,null);assert.equal(last.before,null);assert.equal(last.entries[0].delta,730);
+ assert.equal(await count('transactions'),1);
+});
+test('a question naming an earlier amount cannot turn into a new proposal',async()=>{
+ await commitFixture([action(730)],'Получил 730 рублей, запиши в карманные.');
+ queue=[tool('propose_transaction',{actions:[action(730)]}),say('Ты спрашиваешь о прежнем доходе 730 рублей.')];
+ const r=await turn('В последнем пополнении сколько было, 730 рублей?');
+ assert.equal(r.text,'Ты спрашиваешь о прежнем доходе 730 рублей.');
+ assert.equal(await count('transactions'),1);assert.equal(await count('drafts'),1);assert.equal(await wallet(),73000);
 });

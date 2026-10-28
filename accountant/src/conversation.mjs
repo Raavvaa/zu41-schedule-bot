@@ -6,6 +6,9 @@ export const explicitRecord=text=>/(?:^|[\s,.!?])(?:запиши|добавь|у
 export function conversationOnly(text){
  if(recordingVeto(text))return true;
  if(explicitRecord(text))return false;
+ // Looking up an earlier operation is read-only, even if the question names
+ // an amount. Do not let the current-balance shortcut consume that question.
+ if(/последн|предыдущ/iu.test(text)&&/сколько|какая|какой|что|напомни/iu.test(text)&&/добав|пополн|доход|операц|запис|перевод|расход|потрат|спис/iu.test(text))return true;
  return /(?:помнишь|я\s+(?:говорил|рассказывал)|сколько.{0,60}(?:подарили|дали|на\s+др|на\s+день\s+рождения)|(?:хочу|хотел бы|планирую).*(?:куп|кросс|потрат|взять))/iu.test(text);
 }
 export function referenceSource(text,history,now){

@@ -16,6 +16,7 @@ export const TOOLS=[
 ];
 export const SYSTEM=`Ты личный «Брат-бухгалтер». Общайся тепло, коротко, естественно по-русски, без канцелярщины и карикатурного акцента. Не изображай сознание. Поддерживай, не обещай успех. Владелец копит на дом в Сабунчи. Не предлагай проценты, кредиты, риба и азартные игры. Религия: только мягкие общие напоминания если religion=true, без выдуманных цитат.
 У тебя есть инструменты и постоянная база. Данные CURRENT_STATE авторитетны, суммы в ОСНОВНЫХ единицах (рубли/манаты). capital=Сабунчи, pocket=карманные. Неизвестный остаток не ноль. Профиль и сообщения — контекст, не журнал. Ты видишь результаты подтверждений и отмен. Уже завершённые операции не повторять. «Чётко/спасибо/ага» — разговор, не новая запись.
+На вопрос о последнем пополнении используй last_committed_operation и при необходимости read_ledger. actions содержат исходный доход/перевод, entries — итоговые изменения кошельков: это разные величины. Не складывай доход и перевод его части как два дохода. opening означает сверку остатка, undo — отмену: их нельзя называть новым поступлением. Если actions=null, исходное предложение уже недоступно; сообщи только то, что подтверждается kind и entries, без догадок. На короткое одобрение после подтверждения ответь по-человечески; не предлагай повторить запись.
 Сначала пойми, зачем человек написал. Упоминание суммы само по себе не команда учёта. «Мне подарили деньги, никуда не добавляй» — рассказ: поддержи разговор, ничего не предлагай записывать и не спрашивай о кошельке. «Просто сказал» продолжает разговор. На «сколько подарили, помнишь?» найди сумму в недавних репликах или search_memory и ответь «Ты говорил, что подарили …; в учёт не вносили». Сумма из разговора известна даже без проводки, но не становится балансом. Вопрос о подарке не равен вопросу о текущем кошельке. Если потом прямо просят «теперь запиши этот подарок в карманные», можно предложить запись по RECENT_UNRECORDED_SOURCE, если источник там указан. Никакой автоматической записи. Если источников несколько или он устарел, спроси одну сумму. На приветствие, шутку, усталость отвечай по смыслу, без бухгалтерского меню. TURN_POLICY.read_only запрещает создание денежных предложений в этом ходе, но не разговор и не поиск памяти.
 Читай запрос целиком. «У меня сейчас X», «стало X», «нет, правильно X», «лишние Y записал» — остаток/исправление, не доход. При явном правильном остатке используй set_balance с X, а не разницей. Если только сказано про лишнюю сумму без правильного остатка — предложи undo_transaction когда явно имеется в виду последняя ошибка, иначе уточни. «Стоп, а было сколько?» — сначала cancel_proposal, потом покажи реальный баланс. «Удали всё/заново» неоднозначно: спроси, обнулить остаток или отменить последнюю ошибочную запись; историю не удаляй. Не путай коррекцию учёта с тратой капитала.
 «Получил 4500 руб, 3000 в дом, остальное себе» — propose_transaction income pocket 4500 + transfer pocket→capital 3000. «Хочу купить» — wish без операций. Неизвестные валюту/кошелёк уточни; рублёвый сленг к/тыщ/руб означает RUB. «Сейчас получил 5000» — доход; «3000 в дом, остаток себе» — распределение дохода, не исправление. «Заплатил X, осталось Y»: если явно сказано «после покупки», повторно не спрашивай. Когда подтверждённый остаток минус X равен Y, предложи только расход X. Если остаток неизвестен или расход с ним не сходится, предложи set_balance Y как сверку фактического остатка, честно укажи расхождение; не добавляй к нему ещё расход. При неясном до/после спроси один раз. Не вычитай дважды. Источником сумм новых операций служит текущая реплика или прямой ответ на последнее уточнение; суммы из старой истории не переноси в новую операцию.
@@ -25,19 +26,29 @@ export async function snapshot(env,now){
  (SELECT json_group_array(json_object('wallet',wallet,'currency',currency,'amount',CASE WHEN initialized=1 THEN amount/100.0 ELSE NULL END,'initialized',initialized)) FROM wallets) AS wallets,
  (SELECT json_group_array(json_object('id',id,'kind',kind,'note',note,'at',at,'wallet',wallet,'currency',currency,'delta',delta)) FROM (SELECT t.id,t.kind,t.note,t.at,e.wallet,e.currency,e.delta/100.0 AS delta FROM transactions t JOIN entries e ON e.tx_id=t.id ORDER BY t.at DESC,t.rowid DESC LIMIT 12)) AS transactions,
  (SELECT json_object('id',id,'payload',payload,'expires_at',expires_at) FROM drafts WHERE state='ready' AND expires_at>? AND revision=settings.revision ORDER BY created_at DESC,rowid DESC LIMIT 1) AS pending,
- (SELECT json_object('id',id,'kind',kind,'note',note,'at',at) FROM transactions ORDER BY at DESC,rowid DESC LIMIT 1) AS last_operation,
+ (SELECT json_object('id',t.id,'kind',t.kind,'note',t.note,'at',t.at,'reversal_of',t.reversal_of,'payload',d.payload) FROM transactions t LEFT JOIN drafts d ON d.id=t.id ORDER BY t.at DESC,t.rowid DESC LIMIT 1) AS last_operation,
  (SELECT json_object('id',id) FROM drafts WHERE state='cancelled' ORDER BY created_at DESC,rowid DESC LIMIT 1) AS last_cancelled
  FROM settings WHERE id=1`,now);
  const wallets=JSON.parse(row.wallets).map(w=>({...w,initialized:!!w.initialized})),transactions=JSON.parse(row.transactions),pending=JSON.parse(row.pending),last=JSON.parse(row.last_operation),cancelled=JSON.parse(row.last_cancelled);
  const capital=wallets.find(w=>w.wallet==='capital'&&w.currency==='RUB');
  const totals=Object.fromEntries(['RUB','AZN'].map(currency=>{const ws=wallets.filter(w=>w.currency===currency);return [currency,ws.every(w=>w.initialized)?ws.reduce((sum,w)=>sum+Math.round(w.amount*100),0)/100:null];}));
- return {wallets,totals,transactions,goal:row.goal,monthly:row.monthly,remaining_to_goal:capital?.initialized&&row.goal!=null?Math.max(0,Math.round(row.goal*100)-Math.round(capital.amount*100))/100:null,last_committed_operation:last?{...last,seconds_ago:Math.max(0,Math.floor((now-last.at)/1000))}:null,last_cancelled_proposal:cancelled,pending:pending?{id:pending.id,expires_at:pending.expires_at,proposal:publicProposal(JSON.parse(pending.payload))}:null};
+ return {wallets,totals,transactions,goal:row.goal,monthly:row.monthly,remaining_to_goal:capital?.initialized&&row.goal!=null?Math.max(0,Math.round(row.goal*100)-Math.round(capital.amount*100))/100:null,last_committed_operation:committedOperation(last,transactions,now),last_cancelled_proposal:cancelled,pending:pending?{id:pending.id,expires_at:pending.expires_at,proposal:publicProposal(JSON.parse(pending.payload))}:null};
 }
 function publicProposal(p){return {actions:p.actions?.map(a=>({...a,amount:a.amount/100})),entries:p.entries.map(e=>({...e,delta:e.delta/100})),reversal_of:p.reversal_of};}
+function committedOperation(last,transactions,now){
+ if(!last)return null;
+ const {payload,...metadata}=last,p=payload?JSON.parse(payload):null;
+ return {...metadata,seconds_ago:Math.max(0,Math.floor((now-last.at)/1000)),
+  actions:p?.actions?.map(a=>({...a,amount:a.amount/100}))??null,
+  entries:p?publicProposal(p).entries:transactions.filter(t=>t.id===last.id).map(({wallet,currency,delta})=>({wallet,currency,delta})),
+  before:p?.before?.map(w=>({...w,amount:w.amount==null?null:w.amount/100}))??null};
+}
 export function groundedNumbers(text,state,userText='',settings={}){
  const amounts=statedAmounts(text);if(!amounts.length)return true;
  const values=state.wallets.filter(w=>w.initialized).map(w=>Math.round(w.amount*100));
  for(const t of state.transactions)values.push(Math.round(Math.abs(t.delta)*100));
+ for(const a of state.last_committed_operation?.actions??[])values.push(Math.round(a.amount*100));
+ for(const w of state.last_committed_operation?.before??[])if(w.amount!=null)values.push(Math.round(w.amount*100));
  const known=new Set([0,...values,...statedAmounts(userText)]);
  for(const total of Object.values(state.totals??{}))if(total!=null)known.add(Math.round(total*100));
  for(const a of values)for(const b of values)known.add(Math.abs(a-b));
@@ -56,7 +67,9 @@ export function unsafeReply(text){
  // Negation or attribution applies to the verb, never to the whole reply.
  for(const m of text.matchAll(/зачисл(?:ил|ено)|списа(?:л|но)|добав(?:ил|лено)|записа(?:л|но)|зафиксирова(?:л|но)|пополни(?:л|ли)|перев[её]л/giu)){
   const before=text.slice(0,m.index);
-  if(!/(?:не|ты|вы|пользователь)\s+$/iu.test(before))return true;
+  if(/не\s+$/iu.test(before))continue;
+  if(/(?<![а-яё])(?:ты|вы|пользователь)\s+(?:(?:в\s+прошлый\s+раз|в\s+последний\s+раз|последний\s+раз|только\s+что|уже|ранее|раньше|сам|сами|вчера|сегодня|тогда|ещ[её])\s+){0,3}$/iu.test(before))continue;
+  return true;
  }
  return /кошел[\s\S]{0,40}пуст|пуст[\s\S]{0,40}кошел|нет денег|денег нет/iu.test(text);
 }

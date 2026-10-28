@@ -53,7 +53,10 @@ try{
  const actions=JSON.parse(draft.payload).actions;assert.equal(actions.length,1);assert.equal(actions[0].type,'income');assert.equal(actions[0].wallet,'pocket');assert.equal(actions[0].currency,'RUB');assert.equal(actions[0].amount,620000);
  assert.equal(await count('transactions'),0);passed++;
  await turn('', 'yes:'+proposal.id);assert.equal(await count('transactions'),1);passed++;
- const ack=await turn('Спасибо, брат.');assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(ack.id)).first(),null);assert.equal(await count('transactions'),1);passed++;
+ const ack=await turn('Чётко, брат.');assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(ack.id)).first(),null);assert.equal(await count('transactions'),1);passed++;
+ const last=await turn('Сколько денег было в последнем пополнении?');
+ assert.ok(statedAmounts(last.reply).includes(620000)||/шесть\s+тысяч\s+двести/iu.test(last.reply));
+ assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(last.id)).first(),null);assert.equal(await count('transactions'),1);passed++;
  console.log(JSON.stringify({ok:true,scenarios:passed,groq_calls:calls,reported_total_tokens:tokens,turn_ms:latencies,telegram_network_calls:0,temporary_database:true}));
 }catch{
  console.log(JSON.stringify({ok:false,scenarios:passed,groq_calls:calls,reported_total_tokens:tokens,provider_blocked:blocked,telegram_network_calls:0,temporary_database:true}));

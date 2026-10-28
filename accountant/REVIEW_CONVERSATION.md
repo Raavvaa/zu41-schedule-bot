@@ -16,6 +16,16 @@ data and mocked Groq on a temporary D1 database:
 These results identify defects in this source revision. They do not prove which
 revision is currently running in Cloudflare.
 
+Follow-up on 2026-10-28: two regressions also failed on the first PR #6 commit
+(`62fda7440f13ad8428b15e2ccd6032f1055c2c2b`). A normal attributed sentence about a
+past addition was rejected as a false receipt, and the last-operation context
+contained no original actions. The follow-up permits bounded past-tense owner
+attribution while still rejecting first-person/unverified receipts. It exposes
+original actions, net entries and prior balances in major units for the last
+committed operation. If its draft has expired, original actions/before are null;
+the model cannot reconstruct them from wallet deltas. Questions about past
+operations bypass the current-balance shortcut and cannot create money proposals.
+
 ## Changes
 
 - Conversational amounts, prices and plans are no longer checked as balances.
@@ -39,7 +49,8 @@ production database queries, deployment, or real Telegram messages.
 
 ## Validation and limits
 
-Executed locally: **70/70 tests pass** (53 existing, 17 new), syntax checks pass,
+Executed locally on 2026-10-28: **76/76 tests pass** (53 existing, 23 conversation
+tests), syntax checks pass,
 and `git diff --check` passes. Real Groq calls: **0**. Real Telegram calls: **0**.
 The two targeted regressions also ran against the unchanged base and both failed;
 the same scenarios pass with this patch. This is mocked integration evidence,
@@ -59,6 +70,9 @@ The new integration suite covers the full gift conversation, both reply paths,
 wrong model tools, post-conversation recording, confirmation replay, double-leg
 income, withdrawal confusion, stale/ambiguous references, unrelated expenses,
 memory search, conversation/support/wishes, false receipts and 429 responses.
+It also covers acknowledgment after confirmation, last-operation lookup,
+split-income versus net-delta semantics, balance corrections, unavailable old
+drafts, and read-only questions that mention an earlier amount.
 All fixtures and identifiers are synthetic; external APIs are mocked.
 
 A manual real-model smoke script is prepared:
