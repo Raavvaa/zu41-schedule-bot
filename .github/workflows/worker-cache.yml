@@ -1,4 +1,4 @@
-name: "Accountant dialogue safety and deploy"
+name: "Accountant reviewed update"
 on:
   workflow_dispatch:
 permissions:
@@ -8,34 +8,38 @@ concurrency:
   cancel-in-progress: false
 jobs:
   verify-and-deploy:
+    if: github.ref == 'refs/heads/deploy/brat-accountant'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
+    env:
+      AUTHORIZED_SOURCE_SHA: 2b574527a51d1e00f5d6feb8e61d5225f6f3c16e
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 6890c7a3bdf4cb08685f29bf573c155522075d03
+          ref: ${{ github.sha }}
+          path: release-control
+      - uses: actions/checkout@v4
+        with:
+          ref: 2b574527a51d1e00f5d6feb8e61d5225f6f3c16e
+          path: reviewed-source
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm ci --prefix accountant
-      - run: npm test --prefix accountant
-      - name: Generate synthetic Russian audio fixture
+      - run: npm ci --prefix reviewed-source/accountant
+      - name: Syntax and isolated regression tests
         run: |
-          sudo timeout 90 apt-get install -y -qq espeak-ng ffmpeg
-          espeak-ng -v ru -s 135 -w /tmp/accountant-voice.wav 'Брат, покажи мой баланс.'
-          ffmpeg -y -loglevel error -i /tmp/accountant-voice.wav -c:a libopus /tmp/accountant-voice.ogg
-      - name: Isolated dialogue with real Groq and fake Telegram
+          npm run check --prefix reviewed-source/accountant
+          npm test --prefix reviewed-source/accountant
+          node --test release-control/accountant/test/release-update.test.mjs
+      - name: Bounded real-model gate, temporary D1 and fake Telegram
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: node accountant/test/live-dialog.mjs
-      - name: Deploy only after dialogue gate passes
+        run: node reviewed-source/accountant/test/conversation-live.mjs --opinion
+      - name: Update existing accountant and verify health and owner delivery
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.SABUNCHI_BOT_TOKEN }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OWNER_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          OWNER_CONTEXT: ${{ secrets.SABUNCHI_OWNER_CONTEXT }}
-          ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
           FREE_PLAN_CONFIRMED: ${{ vars.FREE_PLAN_CONFIRMED }}
-        run: node accountant/deploy.mjs
+        run: node release-control/accountant/release-update.mjs reviewed-source
