@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      AUTHORIZED_SOURCE_SHA: 2b574527a51d1e00f5d6feb8e61d5225f6f3c16e
+      AUTHORIZED_SOURCE_SHA: 3a5f34ff3438010d5dd07466e7606d15f58a378b
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,7 +20,7 @@ jobs:
           path: release-control
       - uses: actions/checkout@v4
         with:
-          ref: 2b574527a51d1e00f5d6feb8e61d5225f6f3c16e
+          ref: 3a5f34ff3438010d5dd07466e7606d15f58a378b
           path: reviewed-source
       - uses: actions/setup-node@v4
         with:
@@ -33,7 +33,9 @@ jobs:
           node --test release-control/accountant/test/release-update.test.mjs
       - name: Bounded real-model gate, temporary D1 and fake Telegram
         env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CHAT_PROVIDER: openrouter
+          OPENROUTER_MODEL: openrouter/free
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: node reviewed-source/accountant/test/conversation-live.mjs --opinion
       - name: Update existing accountant and verify health and owner delivery
         env:

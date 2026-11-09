@@ -35,7 +35,7 @@ export async function releaseUpdate({env=process.env,sourceDir,fetcher=fetch,run
  const settings=await cf('/workers/scripts/'+name+'/settings');
  const bindings=settings.bindings??[],db=bindings.find(b=>b.name==='DB'&&b.type==='d1');
  if(!db?.id)throw Error('release_database_binding_missing');
- for(const secret of ['TELEGRAM_BOT_TOKEN','GROQ_API_KEY','OWNER_CHAT_ID','WEBHOOK_SECRET','ADMIN_SECRET'])if(!bindings.some(b=>b.name===secret&&b.type==='secret_text'))throw Error('release_secret_binding_missing');
+ for(const secret of ['TELEGRAM_BOT_TOKEN','GROQ_API_KEY','OPENROUTER_API_KEY','OWNER_CHAT_ID','WEBHOOK_SECRET','ADMIN_SECRET'])if(!bindings.some(b=>b.name===secret&&b.type==='secret_text'))throw Error('release_secret_binding_missing');
  if(bindings.some(b=>!['plain_text','json','secret_text','secret_key'].includes(b.type)&&!(b.name==='DB'&&b.type==='d1')))throw Error('release_unexpected_binding');
  const schedules=await cf('/workers/scripts/'+name+'/schedules');
  if(schedules.schedules?.length!==1||schedules.schedules[0].cron!=='* * * * *')throw Error('release_schedule_mismatch');
@@ -43,11 +43,11 @@ export async function releaseUpdate({env=process.env,sourceDir,fetcher=fetch,run
  if(previous?.versions?.length!==1||previous.versions[0].percentage!==100)throw Error('release_rollback_target_ambiguous');
  emit(JSON.stringify({event:'release_preflight',ok:true,previous_sha:health.sha,target_sha:sha}));
  config.d1_databases[0].database_id=db.id;
- config.vars={...config.vars,SOURCE_SHA:sha,ENABLED:'true'};
+ config.vars={...config.vars,SOURCE_SHA:sha,ENABLED:'true',CHAT_PROVIDER:'openrouter',OPENROUTER_MODEL:'openrouter/free'};
  const path=resolve(sourceDir,'accountant/.release.json');
  let attempted=false;
  async function verifiedHealth(expected){
-  for(let i=0;i<15;i++){try{const h=await request(url+'/health');if(h.sha===expected&&h.enabled&&h.private&&h.agent_tools)return true;}catch{}await wait(2000);}
+  for(let i=0;i<15;i++){try{const h=await request(url+'/health');if(h.sha===expected&&h.enabled&&h.private&&h.agent_tools&&(expected!==sha||h.chat_provider==='openrouter'))return true;}catch{}await wait(2000);}
   return false;
  }
  try{
@@ -58,6 +58,7 @@ export async function releaseUpdate({env=process.env,sourceDir,fetcher=fetch,run
   const after=await cf('/workers/scripts/'+name+'/settings');
   if(after.bindings?.find(b=>b.name==='DB'&&b.type==='d1')?.id!==db.id)throw Error('release_binding_changed');
   for(const b of bindings.filter(b=>b.type==='secret_text'||b.type==='secret_key'))if(!after.bindings.some(a=>a.name===b.name&&a.type===b.type))throw Error('release_secret_missing_after_update');
+  for(const [key,value] of [['CHAT_PROVIDER','openrouter'],['OPENROUTER_MODEL','openrouter/free']])if(!after.bindings.some(b=>b.name===key&&b.type==='plain_text'&&b.text===value))throw Error('release_provider_configuration_mismatch');
   if((await tg('getWebhookInfo')).result?.url!==hook.result.url)throw Error('release_webhook_changed');
  }catch(error){
   if(attempted){

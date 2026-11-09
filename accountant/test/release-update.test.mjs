@@ -12,13 +12,14 @@ async function fixture(failure){
  await mkdir(join(sourceDir,'accountant'));
  await writeFile(join(sourceDir,'accountant/wrangler.jsonc'),JSON.stringify({name,main:'src/index.mjs',vars:{GROQ_MODEL:'openai/gpt-oss-120b'},d1_databases:[{binding:'DB',database_id:'placeholder'}]}));
  const env={GITHUB_REPOSITORY:'Raavvaa/zu41-schedule-bot',GITHUB_REF:'refs/heads/deploy/brat-accountant',FREE_PLAN_CONFIRMED:'true',CLOUDFLARE_API_TOKEN:'fixture-key',CLOUDFLARE_ACCOUNT_ID:'fixture-account',TELEGRAM_BOT_TOKEN:'fixture-bot-key',OWNER_CHAT_ID:'1001',AUTHORIZED_SOURCE_SHA:target};
- const bindings=[{name:'DB',type:'d1',id:'fixture-db'},...['TELEGRAM_BOT_TOKEN','GROQ_API_KEY','OWNER_CHAT_ID','WEBHOOK_SECRET','ADMIN_SECRET'].map(name=>({name,type:'secret_text'}))];
+ const bindings=[{name:'DB',type:'d1',id:'fixture-db'},...['TELEGRAM_BOT_TOKEN','GROQ_API_KEY',...(failure==='missing-openrouter'?[]:['OPENROUTER_API_KEY']),'OWNER_CHAT_ID','WEBHOOK_SECRET','ADMIN_SECRET'].map(name=>({name,type:'secret_text'}))];
+ bindings.push({name:'CHAT_PROVIDER',type:'plain_text',text:'openrouter'},{name:'OPENROUTER_MODEL',type:'plain_text',text:'openrouter/free'});
  let active=prior,deployed=false,rollbacks=0,sends=0;const logs=[],paths=[];
  const fetcher=async(address,options)=>{
   const path=new URL(address).pathname;paths.push(path);
   assert.ok(!path.includes('/d1/'));assert.ok(!path.includes('/secrets'));assert.ok(!path.endsWith('/setWebhook'));
   const ok=result=>Response.json({success:true,result});
-  if(path.endsWith('/health'))return Response.json({ok:true,enabled:true,private:true,agent_tools:true,sha:active});
+  if(path.endsWith('/health'))return Response.json({ok:true,enabled:true,private:true,agent_tools:true,sha:active,chat_provider:failure==='wrong-provider'&&deployed&&active===target?'groq':'openrouter'});
   if(path.endsWith('/workers/subdomain'))return ok({subdomain:'fixture'});
   if(path.endsWith('/getWebhookInfo'))return Response.json({ok:true,result:{url:failure==='wrong-bot'?'https://other.invalid/telegram':url+'/telegram'}});
   if(path.endsWith('/getChat'))return Response.json({ok:true,result:{id:1001,type:'private'}});
@@ -41,7 +42,7 @@ async function fixture(failure){
   if(command==='git')return target;
   assert.equal(command,'npx');assert.ok(args.includes('--keep-vars'));assert.ok(args.includes('--no-x-auto-create'));
   const config=JSON.parse(readFileSync(join(sourceDir,'accountant/.release.json'),'utf8'));
-  assert.equal(config.name,name);assert.equal(config.d1_databases[0].database_id,'fixture-db');assert.equal(config.vars.ENABLED,'true');assert.equal(config.vars.SOURCE_SHA,target);
+  assert.equal(config.vars.CHAT_PROVIDER,'openrouter');assert.equal(config.vars.OPENROUTER_MODEL,'openrouter/free');assert.equal(config.vars.OPENROUTER_API_KEY,undefined);assert.equal(config.name,name);assert.equal(config.d1_databases[0].database_id,'fixture-db');assert.equal(config.vars.ENABLED,'true');assert.equal(config.vars.SOURCE_SHA,target);
   deployed=true;active=failure==='wrong-health'?prior:target;return '';
  };
  try{
@@ -66,3 +67,6 @@ test('missing secret binding after deploy causes rollback',async()=>{
 test('Telegram failure is never reported as verified delivery or silently retried',async()=>{
  const r=await fixture('delivery');assert.equal(r.error.message,'release_deployed_but_delivery_unconfirmed');assert.equal(r.sends,1);assert.equal(r.rollbacks,0);assert.equal(r.logs.at(-1).health_verified,true);assert.equal(r.logs.at(-1).telegram_confirmed,false);
 });
+
+test('missing OpenRouter secret blocks deployment',async()=>{const r=await fixture('missing-openrouter');assert.equal(r.error.message,'release_secret_binding_missing');assert.equal(r.deployed,false);});
+test('wrong active provider rolls back deployment',async()=>{const r=await fixture('wrong-provider');assert.equal(r.error.message,'release_health_failed');assert.equal(r.rollbacks,1);});
