@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   verify-and-deploy:
-    if: github.ref == 'refs/heads/deploy/brat-accountant'
+    if: github.ref == 'refs/heads/deploy/brat-accountant' || github.ref == 'refs/heads/prepare/accountant-fallback-release'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -59,6 +59,7 @@ jobs:
           FREE_PLAN_CONFIRMED: ${{ vars.FREE_PLAN_CONFIRMED }}
         run: node reviewed-source/accountant/test/workers-ai-live.mjs
       - name: Update existing accountant and verify health and owner delivery
+        if: github.ref == 'refs/heads/deploy/brat-accountant'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
