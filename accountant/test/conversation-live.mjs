@@ -1,4 +1,4 @@
-// Manual, bounded smoke test: real Groq, disposable D1, fake Telegram only.
+// Manual, bounded smoke test: real selected provider, disposable D1, fake Telegram only.
 // No automatic workflow trigger and no production database or bot credentials.
 import assert from 'node:assert/strict';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
@@ -9,21 +9,23 @@ import {Miniflare} from 'miniflare';
 import {build} from 'esbuild';
 import {statedAmounts} from '../src/brain.mjs';
 
-if(!process.env.GROQ_API_KEY)throw Error('GROQ_API_KEY is not available; no requests made');
+const {modelProvider}=await import('../src/model-provider.mjs');
+const provider=modelProvider(process.env);
+const modelBindings=provider.name==='openrouter'?{CHAT_PROVIDER:'openrouter',OPENROUTER_API_KEY:provider.key,OPENROUTER_MODEL:provider.model}:{GROQ_API_KEY:provider.key,GROQ_MODEL:provider.model};
 const root=fileURLToPath(new URL('..',import.meta.url));
 const dir=await mkdtemp(path.join(tmpdir(),'brat-intent-live-'));
 let mf,calls=0,tokens=0,blocked=false,seq=1,passed=0;
 const latencies=[];
 try{
  await build({entryPoints:[path.join(root,'test/entry.mjs')],outfile:path.join(dir,'bundle.mjs'),bundle:true,format:'esm',platform:'browser'});
- mf=new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],bindings:{GROQ_API_KEY:process.env.GROQ_API_KEY,GROQ_MODEL:'openai/gpt-oss-120b',TELEGRAM_BOT_TOKEN:'fixture',OWNER_CHAT_ID:'1001'},outboundService:async req=>{
+ mf=new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],bindings:{...modelBindings,TELEGRAM_BOT_TOKEN:'fixture',OWNER_CHAT_ID:'1001'},outboundService:async req=>{
   const u=new URL(req.url);
   if(u.hostname==='api.telegram.org')return Response.json({ok:true,result:{message_id:seq}});
-  if(u.hostname!=='api.groq.com'||u.pathname!=='/openai/v1/chat/completions')throw Error('Unexpected outbound request');
+  if(req.url!==provider.url)throw Error('Unexpected outbound request');
   if(blocked||calls>=8){blocked=true;return Response.json({error:{code:'smoke_budget'}},{status:429});}
   calls++;
   try{
-   const response=await fetch(req.url,{method:'POST',headers:{authorization:req.headers.get('authorization'),'content-type':'application/json'},body:await req.text(),signal:AbortSignal.timeout(15000)});
+   const response=await fetch(req.url,{method:'POST',redirect:'error',headers:{authorization:req.headers.get('authorization'),'content-type':'application/json'},body:await req.text(),signal:AbortSignal.timeout(15000)});
    if(!response.ok)blocked=true; // Stop the entire smoke run on the first provider error.
    const data=await response.clone().json();tokens+=data.usage?.total_tokens??0;
    return response;
@@ -71,8 +73,8 @@ try{
  assert.ok(statedAmounts(last.reply).includes(620000)||/шесть\s+тысяч\s+двести/iu.test(last.reply));
  assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(last.id)).first(),null);assert.equal(await count('transactions'),1);passed++;
  }
- console.log(JSON.stringify({ok:true,scenarios:passed,groq_calls:calls,reported_total_tokens:tokens,turn_ms:latencies,telegram_network_calls:0,temporary_database:true}));
+ console.log(JSON.stringify({ok:true,scenarios:passed,provider:provider.name,model_calls:calls,groq_calls:provider.name==='groq'?calls:0,reported_total_tokens:tokens,turn_ms:latencies,telegram_network_calls:0,temporary_database:true}));
 }catch{
- console.log(JSON.stringify({ok:false,scenarios:passed,groq_calls:calls,reported_total_tokens:tokens,provider_blocked:blocked,telegram_network_calls:0,temporary_database:true}));
+ console.log(JSON.stringify({ok:false,scenarios:passed,provider:provider.name,model_calls:calls,groq_calls:provider.name==='groq'?calls:0,reported_total_tokens:tokens,provider_blocked:blocked,telegram_network_calls:0,temporary_database:true}));
  process.exitCode=1;
 }finally{await mf?.dispose();await rm(dir,{recursive:true,force:true});}

@@ -1,3 +1,4 @@
+import {modelProvider} from './model-provider.mjs';
 import {q,one,all,run,amount,money,validate,propose,apply,balances,balanceText,draftText,walletName,requestEnv,requestRemaining,consumeRequest} from './ledger.mjs';
 import {brain,unsafeReply,statedAmounts} from './brain.mjs';
 import {transcribe,voiceError} from './voice.mjs';
@@ -33,7 +34,7 @@ function localAction(t){
  const wallet=m[2].toLowerCase()==='капитал'?'capital':'pocket',type={доход:'income',расход:'expense',остаток:'opening',перевод:'transfer'}[m[1].toLowerCase()];
  return [{type,wallet,currency:m[3].toUpperCase(),amount:m[4],...(type==='transfer'?{to:wallet==='pocket'?'capital':'pocket'}:{}),note:m[5]??''}];
 }
-const help='🎙 Можно прислать голосовое до 90 секунд и 2 МБ (до 20 в день). Аудио передаётся Groq для распознавания; перед разбором покажу текст.\n\nБрат, можно писать как говоришь: «получил 4500 руб, трёшку в дом, остальное себе». Я покажу запись и спрошу подтверждение.\n\nЕсли Groq недоступен:\n/доход карманные RUB 3500 смена\n/расход карманные RUB 250 еда\n/перевод карманные RUB 3000\n/остаток капитал RUB 100000\n/цель 500000\n/план 25000\n/отмена — отменить последнюю запись с подтверждением\n/память текст — сохранить важное о себе\n/забыть — очистить контекст разговоров\n\nВсе суммы выше — примеры. Ничего не зачислено. RUB и AZN учитываются отдельно; курсы не выдумываю.\nСвободный текст и короткая история передаются Groq для понимания. ID и токены туда не отправляю.';
+const help='🎙 Можно прислать голосовое до 90 секунд и 2 МБ (до 20 в день). Аудио передаётся Groq для распознавания; перед разбором покажу текст.\n\nБрат, можно писать как говоришь: «получил 4500 руб, трёшку в дом, остальное себе». Я покажу запись и спрошу подтверждение.\n\nЕсли модель недоступна:\n/доход карманные RUB 3500 смена\n/расход карманные RUB 250 еда\n/перевод карманные RUB 3000\n/остаток капитал RUB 100000\n/цель 500000\n/план 25000\n/отмена — отменить последнюю запись с подтверждением\n/память текст — сохранить важное о себе\n/забыть — очистить контекст разговоров\n\nВсе суммы выше — примеры. Ничего не зачислено. RUB и AZN учитываются отдельно; курсы не выдумываю.\nДля понимания выбранному сервису модели (Groq или OpenRouter и его провайдеру) передаются текст, короткая история и контекст учёта. ID и токены туда не отправляю.';
 export function financialIntent(text){
  const t=text.toLowerCase().replace(/ё/g,'е');
  // Amounts and narrated transactions must reach interpretation, not keyword shortcuts.
@@ -134,7 +135,7 @@ async function handleTurn(env,b,now,deadline){
  let result;
  try{result=await brain(env,text==='💬 Поговорим'?'Хочу поговорить. Спроси, как у меня дела.':text,now,deadline);}catch(e){
   if(e.message==='request_budget')throw e;
-  const reason={brain_budget:'Сегодня исчерпан лимит обращений бота к модели.',brain_rate:'Groq временно ограничил частоту запросов.',brain_timeout:'Модель не успела ответить.',brain_config:'Нет доступа к модели.',brain_invalid:'Модель вернула ответ, который я не смог проверить.'}[e.message]??'Сервис модели сейчас недоступен.';
+  const reason={brain_budget:'Сегодня исчерпан лимит обращений бота к модели.',brain_rate:'Сервис модели временно ограничил частоту запросов.',brain_timeout:'Модель не успела ответить.',brain_config:'Нет доступа к модели.',brain_invalid:'Модель вернула ответ, который я не смог проверить.'}[e.message]??'Сервис модели сейчас недоступен.';
   return reply(env,id,reason+' Попробуй чуть позже.',now);
  }
  // A correction arriving while the model was thinking supersedes this unsent
@@ -251,7 +252,7 @@ export default {
   env=requestEnv(env);
   try{
    const u=new URL(req.url);
-   if(u.pathname==='/health')return json({ok:true,version:'2.1.0',agent_tools:true,voice:true,sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
+   if(u.pathname==='/health')return json({ok:true,version:'2.1.0',agent_tools:true,voice:true,chat_provider:env.CHAT_PROVIDER??'groq',sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
    if(u.pathname==='/telegram'&&req.method==='POST'){
     if(env.ENABLED!=='true'||!await equal(req.headers.get('X-Telegram-Bot-Api-Secret-Token'),env.WEBHOOK_SECRET))return json({ok:false},403);
     if(Number(req.headers.get('content-length'))>16384)return json({ok:false},413);
@@ -262,7 +263,7 @@ export default {
     ctx.waitUntil((async()=>{const start=Date.now();await drain(env);console.log(JSON.stringify({event:'dialog_drain',duration_ms:Date.now()-start,request_units:env.REQUEST_BUDGET.used}));})().catch(()=>{}));return json({ok:true});
    }
    if(u.pathname==='/ops/probe'&&req.method==='POST'&&env.ADMIN_SECRET&&await equal(req.headers.get('Authorization'),'Bearer '+env.ADMIN_SECRET)){
-    const result=await brain(env,'Сегодня заработал 4500 рублей. Из них 3000 рублей в капитал Сабунчи, остальные 1500 рублей в карманные. Предложи запись дохода и перевода, а не начальные остатки.',Date.now());const a=validate(result.actions);return json({ok:result.kind==='proposal'&&a.length===2&&a.some(x=>x.type==='income'&&x.wallet==='pocket'&&x.amount===450000&&x.currency==='RUB')&&a.some(x=>x.type==='transfer'&&x.wallet==='pocket'&&x.to==='capital'&&x.amount===300000&&x.currency==='RUB'),model:env.GROQ_MODEL,slang_parse:true});
+    const result=await brain(env,'Сегодня заработал 4500 рублей. Из них 3000 рублей в капитал Сабунчи, остальные 1500 рублей в карманные. Предложи запись дохода и перевода, а не начальные остатки.',Date.now());const a=validate(result.actions);return json({ok:result.kind==='proposal'&&a.length===2&&a.some(x=>x.type==='income'&&x.wallet==='pocket'&&x.amount===450000&&x.currency==='RUB')&&a.some(x=>x.type==='transfer'&&x.wallet==='pocket'&&x.to==='capital'&&x.amount===300000&&x.currency==='RUB'),model:modelProvider(env).model,slang_parse:true});
    }
    return json({ok:false},404);
   }catch{return json({ok:false},503);}

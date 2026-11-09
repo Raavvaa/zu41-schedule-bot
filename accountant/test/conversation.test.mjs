@@ -7,6 +7,7 @@ import {Miniflare} from 'miniflare';
 import {build} from 'esbuild';
 import {unsafeReply,statedAmounts} from '../src/brain.mjs';
 
+const openrouter=process.env.TEST_PROVIDER==='openrouter';
 // Entirely synthetic conversations, disposable SQLite and fake external APIs.
 let mf,db,dir,seq=1,queue=[],requests=[],defaultReply='Слушаю тебя.',sent=[];
 const action=n=>({type:'income',wallet:'pocket',currency:'RUB',amount:String(n),to:null,note:'Вымышленный подарок'});
@@ -15,10 +16,10 @@ const say=content=>({content});
 before(async()=>{
  dir=await mkdtemp(path.join(tmpdir(),'brat-conversation-'));
  await build({entryPoints:['test/entry.mjs'],outfile:path.join(dir,'bundle.mjs'),bundle:true,format:'esm',platform:'browser'});
- mf=new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],bindings:{GROQ_API_KEY:'fixture',TELEGRAM_BOT_TOKEN:'fixture',OWNER_CHAT_ID:'1001'},outboundService:async req=>{
+ mf=new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],bindings:{...(openrouter?{CHAT_PROVIDER:'openrouter',OPENROUTER_API_KEY:'fixture'}:{GROQ_API_KEY:'fixture'}),TELEGRAM_BOT_TOKEN:'fixture',OWNER_CHAT_ID:'1001'},outboundService:async req=>{
   const host=new URL(req.url).hostname;
-  if(host==='api.groq.com'){
-   const body=await req.json();requests.push(body);assert.equal(body.tool_choice,'auto');
+  if(host===(openrouter?'openrouter.ai':'api.groq.com')){
+   const body=await req.json();requests.push(body);assert.equal(body.tool_choice,'auto');assert.equal(body.model,openrouter?'openrouter/free':'openai/gpt-oss-120b');assert.equal(req.headers.get('authorization'),'Bearer fixture');
    const next=queue.shift()??say(defaultReply);
    if(next.http)return Response.json({error:{code:'fixture_rate'}},{status:next.http});
    return Response.json({choices:[{message:{role:'assistant',...next}}]});
@@ -293,4 +294,23 @@ test('a fresh income with a demonstrative is not attached to an earlier gift',as
  const p=await turn('Получил за смену 730 рублей, запиши эти 730 в карманные.');
  const d=JSON.parse((await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(p.id)).first()).payload);
  assert.equal(d.source_message_id,undefined);assert.equal(d.actions[0].amount,73000);
+});
+
+
+test('tool round trips preserve provider reasoning details but do not expose them',async()=>{
+ const details=[{type:'reasoning.encrypted',data:'opaque-test-reasoning'}];
+ queue=[{...tool('read_ledger',{}),reasoning_details:details},say('Слушаю тебя.')];
+ const r=await turn('Объясни ситуацию по журналу.');
+ assert.equal(requests.length,2);
+ assert.deepEqual(requests[1].messages.find(m=>m.tool_calls)?.reasoning_details,details);
+ assert.doesNotMatch(r.text,/opaque-test-reasoning/);
+ assert.equal((await db.prepare("SELECT count(*) n FROM memory WHERE content LIKE '%opaque-test-reasoning%'").first()).n,0);
+ await noMoney();
+});
+
+test('provider daily budget stops requests before the outbound call',async()=>{
+ const day=new Date(Date.now()+10800000).toISOString().slice(0,10);
+ await db.prepare('INSERT INTO budgets(day,used) VALUES(?,?)').bind(openrouter?'openrouter:'+day:day,openrouter?50:200).run();
+ const r=await turn('Привет, как дела?');
+ assert.match(r.text,/исчерпан лимит/);assert.equal(requests.length,0);await noMoney();
 });

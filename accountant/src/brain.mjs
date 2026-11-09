@@ -1,3 +1,4 @@
+import {modelProvider,completionRequest,toolAssistant} from './model-provider.mjs';
 import {all,one,run,balances,validate,consumeRequest} from './ledger.mjs';
 import {recordingVeto,conversationOnly,plannedRequest,giftReference,referenceSource,ledgerClaim} from './conversation.mjs';
 const field=(type,description,extra={})=>({type,description,...extra});
@@ -99,7 +100,7 @@ export function unsafeReply(text){
 }
 export async function brain(env,text,now,deadline=Date.now()+21000){
  const started=Date.now(),day=new Date(now+10800000).toISOString().slice(0,10);
- if(!env.GROQ_API_KEY)throw Error('brain_config');
+ const provider=modelProvider(env),budgetDay=provider.name==='groq'?day:'openrouter:'+day;
  const settings=await one(env,'SELECT goal,monthly,religion,context FROM settings WHERE id=1');
  let state=await snapshot(env,now);
  const history=await all(env,'SELECT id,role,content,at FROM memory ORDER BY at DESC,rowid DESC LIMIT 24');
@@ -121,17 +122,17 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
  let lastCall='',repairs=0;
  const repair=(message,reason)=>{
   if(repairs++>=1)return false;
-  if(message.tool_calls?.length)messages.push({role:'assistant',content:null,tool_calls:message.tool_calls},{role:'tool',tool_call_id:message.tool_calls[0].id,content:JSON.stringify({ok:false,reason,ledger_changed:false})});
+  if(message.tool_calls?.length)messages.push(toolAssistant(message),{role:'tool',tool_call_id:message.tool_calls[0].id,content:JSON.stringify({ok:false,reason,ledger_changed:false})});
   else messages.push({role:'assistant',content:message.content},{role:'system',content:reason});
   return true;
  };
  const responseIssue=reply=>unsafeReply(reply)?'Ты заявил о выполненном действии без квитанции программы. Ничего не проведено. Ответь по теме без ложной квитанции.':ledgerClaim(reply)&&!groundedNumbers(reply,state,'',settings)?'Этот текущий остаток не подтверждён журналом. Для баланса используй respond(kind=balance). Если речь о рассказе, укажи источник: «ты говорил», и не называй его текущим балансом.':null;
  const failedRepair=()=>clarify('Не до конца понял тебя. Ты сейчас просто рассказываешь или просишь учесть операцию?');
  for(let round=0;round<4;round++){
-  const budget=await run(env,'INSERT INTO budgets(day,used) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET used=used+1 WHERE used<200',day);
+  const budget=await run(env,'INSERT INTO budgets(day,used) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET used=used+1 WHERE used<?',budgetDay,provider.dailyLimit);
   if(!budget.meta.changes)throw Error('brain_budget');
   const remaining=Math.min(21000-(Date.now()-started),deadline-Date.now());if(remaining<1000)throw Error('brain_timeout');
-  consumeRequest(env);let res;try{res=await fetch('https://api.groq.com/openai/v1/chat/completions',{method:'POST',headers:{Authorization:'Bearer '+env.GROQ_API_KEY,'content-type':'application/json'},body:JSON.stringify({model:env.GROQ_MODEL??'openai/gpt-oss-120b',messages,tools:TOOLS,tool_choice:'auto',parallel_tool_calls:false,temperature:0.2,max_completion_tokens:1600}),signal:AbortSignal.timeout(Math.min(15000,remaining))});}catch{throw Error('brain_timeout');}
+  consumeRequest(env);let res;try{res=await fetch(provider.url,completionRequest(provider,messages,TOOLS,remaining));}catch{throw Error('brain_timeout');}
   if(!res.ok){
    if(res.status===400&&round===0){const error=await res.json().catch(()=>({}));if(error.error?.code==='tool_use_failed'){messages.push({role:'system',content:'Предыдущая генерация не прошла проверку формата. Для обычного разговора ответь текстом. Если нужна операция, вызови только один из перечисленных инструментов с точными именами параметров.'});continue;}}
    throw Error(res.status===429?'brain_rate':'brain_unavailable');
@@ -203,7 +204,7 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
    state=await snapshot(env,now);result={cancelled:r.meta.changes,ledger_changed:false,snapshot:state};
    if(!/сколько|баланс|было/iu.test(text))return {kind:'chat',reply:r.meta.changes?'Отменил предложение, брат. Деньги не менял.':'Неподтверждённых предложений нет. Если ошиблась последняя запись, могу подготовить её отмену.',actions:[]};
   }
-  messages.push({role:'assistant',content:null,tool_calls:[call]},{role:'tool',tool_call_id:call.id,content:JSON.stringify(result)});
+  messages.push(toolAssistant(message),{role:'tool',tool_call_id:call.id,content:JSON.stringify(result)});
  }
  return clarify('Не успел закончить проверку, брат. Скажи, нужно посмотреть записи или исправить остаток?');
 }
