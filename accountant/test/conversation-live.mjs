@@ -23,6 +23,7 @@ function classifyFailure(status,data){
  if(status===402)return 'credits';
  if(status===429)return 'rate_limit';
  if(/data policy|privacy|data collection/.test(message))return 'privacy_policy';
+ if(/tool use|tool calling|tool compatibility/.test(message))return 'tool_compatibility';
  if(/no endpoints|no providers/.test(message))return 'no_eligible_provider';
  if(/parameter|tool|schema/.test(message))return 'unsupported_request';
  return 'http_error';

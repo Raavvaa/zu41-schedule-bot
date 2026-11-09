@@ -16,9 +16,9 @@ export function modelProvider(env){
 export function completionRequest(provider,messages,tools,remaining){
  const options=provider.name==='openrouter'
   ?{max_tokens:1600,provider:{require_parameters:true,data_collection:'deny'}}
-  :{max_completion_tokens:1600};
+  :{max_completion_tokens:1600,parallel_tool_calls:false};
  return {method:'POST',redirect:'manual',headers:{Authorization:'Bearer '+provider.key,'content-type':'application/json'},
-  body:JSON.stringify({model:provider.model,messages,tools,tool_choice:'auto',parallel_tool_calls:false,temperature:0.2,...options}),
+  body:JSON.stringify({model:provider.model,messages,tools,tool_choice:'auto',temperature:0.2,...options}),
   signal:AbortSignal.timeout(Math.min(15000,remaining))};
 }
 
