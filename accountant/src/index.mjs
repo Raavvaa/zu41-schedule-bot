@@ -1,4 +1,4 @@
-import {modelProvider} from './model-provider.mjs';
+import {modelCandidates,modelProvider} from './model-provider.mjs';
 import {q,one,all,run,amount,money,validate,propose,apply,balances,balanceText,draftText,walletName,requestEnv,requestRemaining,consumeRequest} from './ledger.mjs';
 import {brain,unsafeReply,statedAmounts} from './brain.mjs';
 import {transcribe,voiceError} from './voice.mjs';
@@ -36,12 +36,20 @@ function localAction(t){
 }
 const help='🎙 Можно прислать голосовое до 90 секунд и 2 МБ (до 20 в день). Аудио передаётся Groq для распознавания; перед разбором покажу текст.\n\nБрат, можно писать как говоришь: «получил 4500 руб, трёшку в дом, остальное себе». Я покажу запись и спрошу подтверждение.\n\nЕсли модель недоступна:\n/доход карманные RUB 3500 смена\n/расход карманные RUB 250 еда\n/перевод карманные RUB 3000\n/остаток капитал RUB 100000\n/цель 500000\n/план 25000\n/отмена — отменить последнюю запись с подтверждением\n/память текст — сохранить важное о себе\n/забыть — очистить контекст разговоров\n\nВсе суммы выше — примеры. Ничего не зачислено. RUB и AZN учитываются отдельно; курсы не выдумываю.\nДля понимания выбранному сервису модели (Groq или OpenRouter и его провайдеру) передаются текст, короткая история и контекст учёта. ID и токены туда не отправляю.';
 export function financialIntent(text){
- const t=text.toLowerCase().replace(/ё/g,'е');
+ const t=text.toLowerCase().replace(/ё/g,'е').replace(/\s+/gu,' ');
+ // Dates and amounts of confirmed top-ups can be read without a model.
+ if(/^(?:брат[, ]+)?(?:(?:в какое время|во сколько|когда) (?:и )?(?:я )?(?:сколько (?:я )?)?(?:последний раз )?(?:добавлял|пополнял|закидывал)(?: и сколько)?|(?:сколько и когда|когда и сколько) (?:я )?(?:добавлял|пополнял|закидывал))[\s?!,.]*$/u.test(t))return 'topups';
  // Amounts and narrated transactions must reach interpretation, not keyword shortcuts.
  if(conversationOnly(t)||/\d|(?:заплатил|потратил|получил|заработал|перевел|добавь|запиши|тысяч|сотен|полторы|тр[её]шк|подар|день рожден|(?<![а-я])др(?![а-я]))/u.test(t))return null;
  if(/^(?:(?:брат|ты|а|ну)\s+)*(?:добавил|записал|зачислил|сохранил|списал|подтвердил|получилось)[\s?!,.]*$/u.test(t))return 'status';
  if(/(?:баланс|сколько.{0,35}(?:денег|денеж|бабок|бабла|остал|накоп|карман|сабунчи|капитал)|(?:денег|денеж|бабок).{0,20}сколько|(?:что|че).{0,20}(?:по деньгам|в кошельк)|скок.{0,20}(?:денег|бабла))/u.test(t))return 'balance';
  return null;
+}
+async function historyText(env,topups=false){
+ const rows=await all(env,`SELECT t.note,t.at,e.wallet,e.currency,e.delta FROM transactions t JOIN entries e ON e.tx_id=t.id ${topups?`WHERE e.delta>0 AND t.kind NOT LIKE '%opening%' AND t.reversal_of IS NULL AND NOT EXISTS(SELECT 1 FROM transactions r WHERE r.reversal_of=t.id)` : ''} ORDER BY t.at DESC,t.rowid DESC,e.wallet,e.currency LIMIT 12`);
+ if(!rows.length)return topups?'Подтверждённых пополнений пока нет.':'Записей пока нет, брат.';
+ const date=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+ return (topups?'Последние пополнения по кошелькам (МСК):\n':'Последние записи (МСК):\n')+rows.map(r=>`${date.format(r.at)} · ${walletName(r.wallet)} ${r.delta>=0?'+':'−'}${money(Math.abs(r.delta),r.currency)}${r.note?' · '+r.note:''}`).join('\n');
 }
 async function recordStatus(env,now){
  const d=await one(env,"SELECT id,state,expires_at FROM drafts ORDER BY created_at DESC,rowid DESC LIMIT 1");
@@ -93,8 +101,10 @@ async function handleTurn(env,b,now,deadline){
   return reply(env,id,'🎙 Я услышал:\n'+heard+'\n\nПроверь слова и суммы. Передать на разбор? Пока ничего не записано. Голос распознаёт Groq.',now,{inline_keyboard:[[{text:'✅ Разобрать',callback_data:'hear:'+id}],[{text:'❌ Не так / отмена',callback_data:'discard:'+id}]]});
  }
  if(text==='/start'||text==='/help')return reply(env,id,'С Бисмиллях, брат. Я твой личный бухгалтер: капитал Сабунчи отдельно, карманные отдельно.\n\n'+await balanceText(env)+'\n\n'+help,now);
- if(financialIntent(text)==='status')return reply(env,id,await recordStatus(env,now),now);
- if(text==='💰 Баланс'||text==='/balance'||financialIntent(text)==='balance')return reply(env,id,await balanceText(env),now);
+ const intent=financialIntent(text);
+ if(intent==='status')return reply(env,id,await recordStatus(env,now),now);
+ if(intent==='topups')return reply(env,id,await historyText(env,true),now);
+ if(text==='💰 Баланс'||text==='/balance'||intent==='balance')return reply(env,id,await balanceText(env),now);
  if(text==='✍️ Записать')return reply(env,id,'Напиши, что уже получил или потратил, сумму и кошелёк. Если только хочешь купить — скажи «хочу», я ничего не спишу.\n\n'+help,now);
  if(/напомни\s+(?:(?:че|чё|что)\s+у меня\s+там|(?:мою\s+)?цель|(?:мой\s+)?план)[\s?!,.]*$/iu.test(text))return reply(env,id,'Брат, твоя цель — накопить на дом в Сабунчи. Капитал и карманные учитываем отдельно. Текущие подтверждённые суммы:\n\n'+await balanceText(env),now);
  if(text==='🎯 Цель')return reply(env,id,await balanceText(env)+'\n\nЧтобы задать личную цель в рублях: /цель 500000\nПлан накоплений на месяц: /план 25000\nСрок и бюджет сделки обсудим отдельно, без выдуманного курса.',now);
@@ -108,10 +118,7 @@ async function handleTurn(env,b,now,deadline){
  if(text.startsWith('/память ')){const saved=await appendNote(env,text.slice(8));return reply(env,id,saved?'Добавил заметку, прежние сохранил. Посмотреть: /память.':'Заметки заполнены. Старые сохранил, новую не добавил. Посмотреть: /память.',now);}
  if(text==='/память')return reply(env,id,(await one(env,'SELECT context FROM settings WHERE id=1')).context||'Постоянных заметок пока нет.',now);
  if(text==='/забыть'){await env.DB.batch([q(env,'DELETE FROM memory'),q(env,"UPDATE settings SET context='' WHERE id=1")]);return reply(env,id,'Контекст разговоров и заметка очищены. Журнал денег сохранён.',now);}
- if(text==='📒 История'||text==='/history'){
-  const rs=await all(env,'SELECT t.id,t.note,t.at,e.wallet,e.currency,e.delta FROM transactions t JOIN entries e ON e.tx_id=t.id ORDER BY t.at DESC,t.rowid DESC LIMIT 12');
-  return reply(env,id,rs.length?rs.map(r=>`${day(r.at)} · ${walletName(r.wallet)} ${r.delta>=0?'+':'−'}${money(Math.abs(r.delta),r.currency)}${r.note?' · '+r.note:''}`).join('\n'):'Записей пока нет, брат.',now);
- }
+ if(text==='📒 История'||text==='/history')return reply(env,id,await historyText(env),now);
  if(text==='/отмена'){
   const t=await one(env,'SELECT * FROM transactions t WHERE reversal_of IS NULL AND NOT EXISTS(SELECT 1 FROM transactions r WHERE r.reversal_of=t.id) ORDER BY at DESC,rowid DESC LIMIT 1');
   if(!t)return reply(env,id,'Нет записи для отмены.',now);
@@ -157,7 +164,7 @@ async function handleTurn(env,b,now,deadline){
  }
  if(result.kind==='balance')return reply(env,id,await balanceText(env),now);
  if(result.kind==='status')return reply(env,id,await recordStatus(env,now),now);
- if(result.kind==='history')return handle(env,{update_id:b.update_id,message:{text:'/history'}},now);
+ if(result.kind==='history')return reply(env,id,await historyText(env),now);
  // Only the program may issue a receipt. Ordinary numeric explanations are allowed.
  if(unsafeReply(result.reply))return reply(env,id,'Не смог корректно ответить. Скажи ещё раз, что ты имеешь в виду?',now);
  if(result.kind==='clarify')await memory(env,id+':clarify','assistant',result.reply,now+1);
@@ -252,7 +259,7 @@ export default {
   env=requestEnv(env);
   try{
    const u=new URL(req.url);
-   if(u.pathname==='/health')return json({ok:true,version:'2.1.0',agent_tools:true,voice:true,chat_provider:env.CHAT_PROVIDER??'groq',sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
+   if(u.pathname==='/health')return json({ok:true,version:'2.1.0',agent_tools:true,voice:true,chat_provider:env.CHAT_PROVIDER??'groq',chat_chain:modelCandidates(env).map(p=>p.name),sha:env.SOURCE_SHA,private:true,enabled:env.ENABLED==='true'});
    if(u.pathname==='/telegram'&&req.method==='POST'){
     if(env.ENABLED!=='true'||!await equal(req.headers.get('X-Telegram-Bot-Api-Secret-Token'),env.WEBHOOK_SECRET))return json({ok:false},403);
     if(Number(req.headers.get('content-length'))>16384)return json({ok:false},413);

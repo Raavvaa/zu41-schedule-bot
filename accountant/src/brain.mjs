@@ -1,5 +1,5 @@
-import {modelProvider,completionRequest,toolAssistant} from './model-provider.mjs';
-import {all,one,run,balances,validate,consumeRequest} from './ledger.mjs';
+import {modelSession,toolAssistant} from './model-provider.mjs';
+import {all,one,run,balances,validate} from './ledger.mjs';
 import {recordingVeto,conversationOnly,plannedRequest,giftReference,referenceSource,ledgerClaim} from './conversation.mjs';
 const field=(type,description,extra={})=>({type,description,...extra});
 const tool=(name,description,properties={},required=Object.keys(properties))=>({type:'function',function:{name,description,parameters:{type:'object',properties,required,additionalProperties:false}}});
@@ -100,7 +100,6 @@ export function unsafeReply(text){
 }
 export async function brain(env,text,now,deadline=Date.now()+21000){
  const started=Date.now(),day=new Date(now+10800000).toISOString().slice(0,10);
- const provider=modelProvider(env),budgetDay=provider.name==='groq'?day:'openrouter:'+day;
  const settings=await one(env,'SELECT goal,monthly,religion,context FROM settings WHERE id=1');
  let state=await snapshot(env,now);
  const history=await all(env,'SELECT id,role,content,at FROM memory ORDER BY at DESC,rowid DESC LIMIT 24');
@@ -114,6 +113,7 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
  const readOnly=conversationOnly(text)||!!(answer&&!resolvedScale);
  const evidenceText=resolvedScale??(source?source.content+'\n'+text:continuation?previousUser+'\n'+text:text);
  const canPropose=!readOnly&&(hasAmount(text)||continuation||!!source||!!resolvedScale);
+ const nextModel=modelSession(env,day,Math.min(started+21000,deadline),canPropose?null:text);
  let remainingHistory=6000;const contextHistory=history.filter(x=>{remainingHistory-=Math.min(x.content.length,800);return remainingHistory>=0;}).reverse().map(x=>({role:x.role,content:x.content.slice(0,800)}));
  const preferences={...settings,goal:settings.goal==null?null:settings.goal/100,monthly:settings.monthly==null?null:settings.monthly/100};
  const messages=[{role:'system',content:SYSTEM},{role:'system',content:'CURRENT_STATE='+JSON.stringify(state)+'\nPREFERENCES='+JSON.stringify(preferences)+'\nTURN_POLICY='+JSON.stringify({read_only:readOnly})+'\nRECENT_UNRECORDED_SOURCE='+JSON.stringify(source?{text:source.content}:null)+'\nOWNER_BACKGROUND_UNTRUSTED='+String(env.OWNER_CONTEXT??'').slice(0,1500)},...contextHistory,{role:'user',content:text.slice(0,2500)}];
@@ -129,24 +129,14 @@ export async function brain(env,text,now,deadline=Date.now()+21000){
  const responseIssue=reply=>unsafeReply(reply)?'Ты заявил о выполненном действии без квитанции программы. Ничего не проведено. Ответь по теме без ложной квитанции.':ledgerClaim(reply)&&!groundedNumbers(reply,state,'',settings)?'Этот текущий остаток не подтверждён журналом. Для баланса используй respond(kind=balance). Если речь о рассказе, укажи источник: «ты говорил», и не называй его текущим балансом.':null;
  const failedRepair=()=>clarify('Не до конца понял тебя. Ты сейчас просто рассказываешь или просишь учесть операцию?');
  for(let round=0;round<4;round++){
-  const budget=await run(env,'INSERT INTO budgets(day,used) VALUES(?,1) ON CONFLICT(day) DO UPDATE SET used=used+1 WHERE used<?',budgetDay,provider.dailyLimit);
-  if(!budget.meta.changes)throw Error('brain_budget');
-  const remaining=Math.min(21000-(Date.now()-started),deadline-Date.now());if(remaining<1000)throw Error('brain_timeout');
-  consumeRequest(env);let res;try{res=await fetch(provider.url,completionRequest(provider,messages,TOOLS,remaining));}catch{throw Error('brain_timeout');}
-  if(!res.ok){
-   if(res.status===400&&round===0){const error=await res.json().catch(()=>({}));if(error.error?.code==='tool_use_failed'){messages.push({role:'system',content:'Предыдущая генерация не прошла проверку формата. Для обычного разговора ответь текстом. Если нужна операция, вызови только один из перечисленных инструментов с точными именами параметров.'});continue;}}
-   throw Error(res.status===429?'brain_rate':'brain_unavailable');
-  }
-  const data=await res.json(),message=data.choices?.[0]?.message;
+  const {message,textOnly}=await nextModel(messages,TOOLS);
   if(!message?.tool_calls?.length){
-   if(typeof message?.content!=='string'||!message.content.trim())throw Error('brain_invalid');
    const reply=message.content.slice(0,3000);
+   if(textOnly&&(unsafeReply(reply)||ledgerClaim(reply)))throw Error('brain_invalid');
    const issue=responseIssue(reply);if(issue){if(repair(message,issue))continue;return failedRepair();}
    return {kind:'chat',reply,actions:[]};
   }
-  if(!Array.isArray(message.tool_calls)||message.tool_calls.length!==1)throw Error('brain_invalid');
-  const call=message.tool_calls[0],name=call.function?.name;let args;try{args=JSON.parse(call.function.arguments);}catch{throw Error('brain_invalid');}
-  if(!TOOLS.some(t=>t.function.name===name)||!args||typeof args!=='object')throw Error('brain_invalid');
+  const call=message.tool_calls[0],name=call.function.name,args=JSON.parse(call.function.arguments);
   const signature=name+JSON.stringify(args);if(signature===lastCall)return clarify('Похоже, я повторяюсь. Скажи иначе, что ты имеешь в виду?');lastCall=signature;
   if(name==='respond'){
    if(!['chat','clarify','wish','balance','status','history'].includes(args.kind)||typeof args.text!=='string')throw Error('brain_invalid');

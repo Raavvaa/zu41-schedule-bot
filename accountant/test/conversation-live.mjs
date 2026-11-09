@@ -10,11 +10,12 @@ import {build} from 'esbuild';
 import {statedAmounts} from '../src/brain.mjs';
 
 const {modelProvider}=await import('../src/model-provider.mjs');
-const provider=modelProvider(process.env);
-const modelBindings=provider.name==='openrouter'?{CHAT_PROVIDER:'openrouter',OPENROUTER_API_KEY:provider.key,OPENROUTER_MODEL:provider.model}:{GROQ_API_KEY:provider.key,GROQ_MODEL:provider.model};
+const forcedFallback=process.argv.includes('--fallback');
+const provider=modelProvider(forcedFallback?{...process.env,CHAT_PROVIDER:'groq'}:process.env);
+const modelBindings=provider.name==='openrouter'?{CHAT_PROVIDER:'openrouter',OPENROUTER_API_KEY:provider.key,OPENROUTER_MODEL:provider.model}:{GROQ_API_KEY:provider.key,GROQ_MODEL:provider.model,...(forcedFallback?{CHAT_PROVIDER:'openrouter',OPENROUTER_API_KEY:'fixture'}:{})};
 const root=fileURLToPath(new URL('..',import.meta.url));
 const dir=await mkdtemp(path.join(tmpdir(),'brat-intent-live-'));
-let mf,calls=0,tokens=0,blocked=false,seq=1,passed=0;
+let mf,calls=0,tokens=0,blocked=false,seq=1,passed=0,simulatedOutages=0;
 const latencies=[];
 let providerStatus=null,providerFailure=null;
 function classifyFailure(status,data){
@@ -33,6 +34,7 @@ try{
  mf=new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],bindings:{...modelBindings,TELEGRAM_BOT_TOKEN:'fixture',OWNER_CHAT_ID:'1001'},outboundService:async req=>{
   const u=new URL(req.url);
   if(u.hostname==='api.telegram.org')return Response.json({ok:true,result:{message_id:seq}});
+  if(forcedFallback&&req.url==='https://openrouter.ai/api/v1/chat/completions'){simulatedOutages++;return Response.json({error:{code:'fixture_down'}},{status:503});}
   if(req.url!==provider.url)throw Error('Unexpected outbound request');
   if(blocked||calls>=8){blocked=true;return Response.json({error:{code:'smoke_budget'}},{status:429});}
   calls++;
@@ -58,7 +60,16 @@ try{
   assert.doesNotMatch(reply,/Не буду угадывать|Модель не успела|не смог проверить|Сервис модели|исчерпан лимит/iu);
   return {id,reply};
  }
- if(process.argv.includes('--opinion')){
+ if(forcedFallback){
+  const chat=await turn('Привет, брат. Как ты?');
+  assert.ok(chat.reply.trim());assert.equal(await count('drafts'),0);passed++;
+  const proposal=await turn('Запиши доход 3700 рублей в карманные.');
+  const draft=await db.prepare('SELECT payload FROM drafts WHERE id=?').bind(String(proposal.id)).first();assert.ok(draft);
+  const actions=JSON.parse(draft.payload).actions;
+  assert.equal(actions.length,1);assert.equal(actions[0].type,'income');assert.equal(actions[0].wallet,'pocket');assert.equal(actions[0].currency,'RUB');assert.equal(actions[0].amount,370000);
+  assert.equal(await count('transactions'),0);passed++;
+  await turn('', 'yes:'+proposal.id);assert.equal(await count('transactions'),1);passed++;
+ }else if(process.argv.includes('--opinion')){
   const opinion=await turn('На праздник подарили 18 тысяч, 9 уже отложил в дом, норм? Как думаешь?');
   assert.doesNotMatch(opinion.reply,/Какую сумму нужно учесть|итоговый остаток|Всё верно/iu);
   assert.equal(await count('drafts'),0);assert.equal(await count('transactions'),0);passed++;
@@ -86,7 +97,8 @@ try{
  assert.ok(statedAmounts(last.reply).includes(620000)||/шесть\s+тысяч\s+двести/iu.test(last.reply));
  assert.equal(await db.prepare('SELECT id FROM drafts WHERE id=?').bind(String(last.id)).first(),null);assert.equal(await count('transactions'),1);passed++;
  }
- console.log(JSON.stringify({ok:true,scenarios:passed,provider:provider.name,model_calls:calls,groq_calls:provider.name==='groq'?calls:0,reported_total_tokens:tokens,turn_ms:latencies,telegram_network_calls:0,temporary_database:true}));
+ if(forcedFallback){assert.ok(simulatedOutages>=1);assert.ok(calls>=1);}
+ console.log(JSON.stringify({ok:true,scenarios:passed,provider:provider.name,model_calls:calls,groq_calls:provider.name==='groq'?calls:0,simulated_openrouter_outages:simulatedOutages,reported_total_tokens:tokens,turn_ms:latencies,telegram_network_calls:0,temporary_database:true}));
 }catch{
  console.log(JSON.stringify({ok:false,scenarios:passed,provider:provider.name,model_calls:calls,groq_calls:provider.name==='groq'?calls:0,reported_total_tokens:tokens,provider_blocked:blocked,provider_status:providerStatus,provider_failure:providerFailure,telegram_network_calls:0,temporary_database:true}));
  process.exitCode=1;
