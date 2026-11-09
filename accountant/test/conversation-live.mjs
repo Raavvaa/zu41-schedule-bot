@@ -17,15 +17,20 @@ const root=fileURLToPath(new URL('..',import.meta.url));
 const dir=await mkdtemp(path.join(tmpdir(),'brat-intent-live-'));
 let mf,calls=0,tokens=0,blocked=false,seq=1,passed=0,simulatedOutages=0;
 const latencies=[];
-let providerStatus=null,providerFailure=null;
+let providerStatus=null,providerFailure=null,formatRetries=0;
 function classifyFailure(status,data){
  const message=String(data?.error?.message??'').toLowerCase();
+ if(data?.error?.code==='tool_use_failed'||data?.error?.failed_generation!=null)return 'tool_generation';
  if(status===401)return 'authentication';
  if(status===402)return 'credits';
  if(status===429)return 'rate_limit';
  if(/data policy|privacy|data collection/.test(message))return 'privacy_policy';
  if(/tool use|tool calling|tool compatibility/.test(message))return 'tool_compatibility';
  if(/no endpoints|no providers/.test(message))return 'no_eligible_provider';
+ if(/reasoning_format/.test(message))return 'reasoning_format';
+ if(/parallel_tool_calls/.test(message))return 'parallel_tool_calls';
+ if(/message.*role|system message/.test(message))return 'message_roles';
+ if(/schema/.test(message))return 'tool_schema';
  if(/parameter|tool|schema/.test(message))return 'unsupported_request';
  return 'http_error';
 }
@@ -40,9 +45,12 @@ try{
   calls++;
   try{
    const response=await fetch(req.url,{method:'POST',redirect:'error',headers:{authorization:req.headers.get('authorization'),'content-type':'application/json'},body:await req.text(),signal:AbortSignal.timeout(15000)});
-   if(!response.ok)blocked=true; // Stop the entire smoke run on the first provider error.
    const data=await response.clone().json();tokens+=data.usage?.total_tokens??0;
-   if(!response.ok){providerStatus=response.status;providerFailure=classifyFailure(response.status,data);}
+   if(!response.ok){
+    providerStatus=response.status;providerFailure=classifyFailure(response.status,data);
+    // Let the production client make its one bounded repair. Never retry limits.
+    if(!(provider.name==='groq'&&response.status===400&&data?.error?.code==='tool_use_failed'&&formatRetries++===0))blocked=true;
+   }
    return response;
   }catch{blocked=true;providerFailure='transport_or_invalid_json';return Response.json({error:{code:'smoke_transport'}},{status:503});}
  }});
@@ -60,7 +68,7 @@ try{
   assert.doesNotMatch(reply,/Не буду угадывать|Модель не успела|не смог проверить|Сервис модели|исчерпан лимит/iu);
   return {id,reply};
  }
- if(forcedFallback){
+ if(forcedFallback||process.argv.includes('--primary')){
   const chat=await turn('Привет, брат. Как ты?');
   assert.ok(chat.reply.trim());assert.equal(await count('drafts'),0);passed++;
   const proposal=await turn('Запиши доход 3700 рублей в карманные.');

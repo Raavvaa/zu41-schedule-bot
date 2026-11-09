@@ -29,7 +29,7 @@ export function modelCandidates(env){
 export function completionRequest(provider,messages,tools,remaining){
  const options=provider.name==='openrouter'
   ?{max_tokens:1600,provider:{require_parameters:true,data_collection:'deny'}}
-  :{max_completion_tokens:1600,parallel_tool_calls:false};
+  :{max_completion_tokens:1600,parallel_tool_calls:false,...(/^openai\/gpt-oss-(?:20|120)b$/.test(provider.model)?{reasoning_format:'hidden',reasoning_effort:'low'}:{})};
  return {method:'POST',redirect:'manual',headers:{Authorization:'Bearer '+provider.key,'content-type':'application/json'},
   body:JSON.stringify({model:provider.model,messages,tools,tool_choice:'auto',temperature:0.2,...options}),
   signal:AbortSignal.timeout(Math.min(15000,remaining))};

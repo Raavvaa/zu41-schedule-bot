@@ -30,6 +30,7 @@ test('OpenRouter keeps tools optional and excludes providers collecting data',()
 test('Groq retains its supported output limit',()=>{
  const body=JSON.parse(completionRequest(modelProvider({GROQ_API_KEY:'fixture'}),[],[],5000).body);
  assert.equal(body.max_completion_tokens,1600);assert.equal(body.parallel_tool_calls,false);assert.equal(body.max_tokens,undefined);assert.equal(body.provider,undefined);
+ assert.equal(body.reasoning_format,'hidden');assert.equal(body.reasoning_effort,'low');
 });
 test('tool continuation preserves opaque reasoning without inventing it',()=>{
  const message={content:null,tool_calls:[{id:'fixture'}],reasoning_details:[{type:'reasoning.encrypted',data:'fixture'}]};
