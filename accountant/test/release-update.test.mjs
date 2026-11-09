@@ -12,6 +12,7 @@ async function fixture(failure){
  await mkdir(join(sourceDir,'accountant'));
  await writeFile(join(sourceDir,'accountant/wrangler.jsonc'),JSON.stringify({name,main:'src/index.mjs',vars:{GROQ_MODEL:'openai/gpt-oss-120b'},d1_databases:[{binding:'DB',database_id:'placeholder'}]}));
  const env={GITHUB_REPOSITORY:'Raavvaa/zu41-schedule-bot',GITHUB_REF:'refs/heads/deploy/brat-accountant',FREE_PLAN_CONFIRMED:'true',CLOUDFLARE_API_TOKEN:'fixture-key',CLOUDFLARE_ACCOUNT_ID:'fixture-account',TELEGRAM_BOT_TOKEN:'fixture-bot-key',OWNER_CHAT_ID:'1001',AUTHORIZED_SOURCE_SHA:target};
+ const workersAi=failure==='verified-ai';if(workersAi)env.AI_RESERVE_VERIFIED='true';
  const bindings=[{name:'DB',type:'d1',id:'fixture-db'},...['TELEGRAM_BOT_TOKEN','GROQ_API_KEY',...(failure==='missing-openrouter'?[]:['OPENROUTER_API_KEY']),'OWNER_CHAT_ID','WEBHOOK_SECRET','ADMIN_SECRET'].map(name=>({name,type:'secret_text'}))];
  bindings.push({name:'CHAT_PROVIDER',type:'plain_text',text:'openrouter'},{name:'OPENROUTER_MODEL',type:'plain_text',text:'openrouter/free'});
  let active=prior,deployed=false,rollbacks=0,sends=0;const logs=[],paths=[];
@@ -19,11 +20,11 @@ async function fixture(failure){
   const path=new URL(address).pathname;paths.push(path);
   assert.ok(!path.includes('/d1/'));assert.ok(!path.includes('/secrets'));assert.ok(!path.endsWith('/setWebhook'));
   const ok=result=>Response.json({success:true,result});
-  if(path.endsWith('/health'))return Response.json({ok:true,enabled:true,private:true,agent_tools:true,sha:active,chat_provider:failure==='wrong-provider'&&deployed&&active===target?'groq':'openrouter'});
+  if(path.endsWith('/health'))return Response.json({ok:true,enabled:true,private:true,agent_tools:true,sha:active,chat_chain:workersAi?['openrouter','groq','workers_ai']:['openrouter','groq'],chat_provider:failure==='wrong-provider'&&deployed&&active===target?'groq':'openrouter'});
   if(path.endsWith('/workers/subdomain'))return ok({subdomain:'fixture'});
   if(path.endsWith('/getWebhookInfo'))return Response.json({ok:true,result:{url:failure==='wrong-bot'?'https://other.invalid/telegram':url+'/telegram'}});
   if(path.endsWith('/getChat'))return Response.json({ok:true,result:{id:1001,type:'private'}});
-  if(path.endsWith('/settings'))return ok({bindings:failure==='lost-binding'&&deployed?bindings.slice(0,1):bindings});
+  if(path.endsWith('/settings'))return ok({bindings:failure==='lost-binding'&&deployed?bindings.slice(0,1):workersAi&&deployed?[...bindings,{name:'AI',type:'ai'}]:bindings});
   if(path.endsWith('/schedules'))return ok({schedules:[{cron:'* * * * *'}]});
   if(path.endsWith('/deployments')){
    if(options.method==='POST'){
@@ -43,6 +44,7 @@ async function fixture(failure){
   assert.equal(command,'npx');assert.ok(args.includes('--keep-vars'));assert.ok(args.includes('--no-x-auto-create'));
   const config=JSON.parse(readFileSync(join(sourceDir,'accountant/.release.json'),'utf8'));
   assert.equal(config.vars.CHAT_PROVIDER,'openrouter');assert.equal(config.vars.OPENROUTER_MODEL,'openrouter/free');assert.equal(config.vars.OPENROUTER_API_KEY,undefined);assert.equal(config.name,name);assert.equal(config.d1_databases[0].database_id,'fixture-db');assert.equal(config.vars.ENABLED,'true');assert.equal(config.vars.SOURCE_SHA,target);
+  assert.deepEqual(config.ai,workersAi?{binding:'AI'}:undefined);
   deployed=true;active=failure==='wrong-health'?prior:target;return '';
  };
  try{
@@ -70,3 +72,4 @@ test('Telegram failure is never reported as verified delivery or silently retrie
 
 test('missing OpenRouter secret blocks deployment',async()=>{const r=await fixture('missing-openrouter');assert.equal(r.error.message,'release_secret_binding_missing');assert.equal(r.deployed,false);});
 test('wrong active provider rolls back deployment',async()=>{const r=await fixture('wrong-provider');assert.equal(r.error.message,'release_health_failed');assert.equal(r.rollbacks,1);});
+test('a verified Workers AI probe enables only the expected binding',async()=>{const r=await fixture('verified-ai');assert.equal(r.error,undefined);assert.equal(r.logs.at(-1).workers_ai_reserve,true);});

@@ -34,9 +34,10 @@ export async function releaseUpdate({env=process.env,sourceDir,fetcher=fetch,run
  if(chat.result?.type!=='private'||String(chat.result.id)!==env.OWNER_CHAT_ID)throw Error('release_owner_mismatch');
  const settings=await cf('/workers/scripts/'+name+'/settings');
  const bindings=settings.bindings??[],db=bindings.find(b=>b.name==='DB'&&b.type==='d1');
+ const workersAi=env.AI_RESERVE_VERIFIED==='true';
  if(!db?.id)throw Error('release_database_binding_missing');
  for(const secret of ['TELEGRAM_BOT_TOKEN','GROQ_API_KEY','OPENROUTER_API_KEY','OWNER_CHAT_ID','WEBHOOK_SECRET','ADMIN_SECRET'])if(!bindings.some(b=>b.name===secret&&b.type==='secret_text'))throw Error('release_secret_binding_missing');
- if(bindings.some(b=>!['plain_text','json','secret_text','secret_key'].includes(b.type)&&!(b.name==='DB'&&b.type==='d1')))throw Error('release_unexpected_binding');
+ if(bindings.some(b=>!['plain_text','json','secret_text','secret_key'].includes(b.type)&&!(b.name==='DB'&&b.type==='d1')&&!(workersAi&&b.name==='AI'&&b.type==='ai')))throw Error('release_unexpected_binding');
  const schedules=await cf('/workers/scripts/'+name+'/schedules');
  if(schedules.schedules?.length!==1||schedules.schedules[0].cron!=='* * * * *')throw Error('release_schedule_mismatch');
  const previous=(await cf('/workers/scripts/'+name+'/deployments')).deployments?.[0];
@@ -44,10 +45,12 @@ export async function releaseUpdate({env=process.env,sourceDir,fetcher=fetch,run
  emit(JSON.stringify({event:'release_preflight',ok:true,previous_sha:health.sha,target_sha:sha}));
  config.d1_databases[0].database_id=db.id;
  config.vars={...config.vars,SOURCE_SHA:sha,ENABLED:'true',CHAT_PROVIDER:'openrouter',OPENROUTER_MODEL:'openrouter/free'};
+ if(workersAi)config.ai={binding:'AI'};
  const path=resolve(sourceDir,'accountant/.release.json');
  let attempted=false;
  async function verifiedHealth(expected){
-  for(let i=0;i<15;i++){try{const h=await request(url+'/health');if(h.sha===expected&&h.enabled&&h.private&&h.agent_tools&&(expected!==sha||h.chat_provider==='openrouter'))return true;}catch{}await wait(2000);}
+  const chain=workersAi?['openrouter','groq','workers_ai']:['openrouter','groq'];
+  for(let i=0;i<15;i++){try{const h=await request(url+'/health');if(h.sha===expected&&h.enabled&&h.private&&h.agent_tools&&(expected!==sha||h.chat_provider==='openrouter'&&JSON.stringify(h.chat_chain)===JSON.stringify(chain)))return true;}catch{}await wait(2000);}
   return false;
  }
  try{
@@ -56,6 +59,7 @@ export async function releaseUpdate({env=process.env,sourceDir,fetcher=fetch,run
   run('npx',['--no-install','wrangler','deploy','--config','.release.json','--keep-vars','--no-x-auto-create'],{cwd:resolve(sourceDir,'accountant'),env:{...env,WRANGLER_SEND_METRICS:'false',CI:'true'}});
   if(!await verifiedHealth(sha))throw Error('release_health_failed');
   const after=await cf('/workers/scripts/'+name+'/settings');
+  if(workersAi&&!after.bindings?.some(b=>b.name==='AI'&&b.type==='ai'))throw Error('release_ai_binding_missing');
   if(after.bindings?.find(b=>b.name==='DB'&&b.type==='d1')?.id!==db.id)throw Error('release_binding_changed');
   for(const b of bindings.filter(b=>b.type==='secret_text'||b.type==='secret_key'))if(!after.bindings.some(a=>a.name===b.name&&a.type===b.type))throw Error('release_secret_missing_after_update');
   for(const [key,value] of [['CHAT_PROVIDER','openrouter'],['OPENROUTER_MODEL','openrouter/free']])if(!after.bindings.some(b=>b.name===key&&b.type==='plain_text'&&b.text===value))throw Error('release_provider_configuration_mismatch');
@@ -70,8 +74,8 @@ export async function releaseUpdate({env=process.env,sourceDir,fetcher=fetch,run
  }finally{await unlink(path).catch(()=>{});}
  // One owner-only delivery check, without an inbound financial event.
  let delivered=false;
- try{const sent=await tg('sendMessage',{chat_id:env.OWNER_CHAT_ID,text:'Брат, обновление установлено. Поправил различие между разговором и просьбой записать деньги. Можешь писать обычным языком; записи по-прежнему требуют подтверждения.'});delivered=sent.ok===true&&Number.isSafeInteger(sent.result?.message_id);}catch{}
- emit(JSON.stringify({event:'release_result',health_verified:true,source_sha:sha,previous_sha:health.sha,telegram_confirmed:delivered,financial_test_in_production:false,production_d1_queries:0}));
+ try{const sent=await tg('sendMessage',{chat_id:env.OWNER_CHAT_ID,text:'Брат, обновление установлено. Если OpenRouter не ответит, переключусь на Groq'+(workersAi?', а для разговора есть ещё резерв Cloudflare':'')+'. Историю с датами и суммами покажу из журнала. Запись по-прежнему требует подтверждения.'});delivered=sent.ok===true&&Number.isSafeInteger(sent.result?.message_id);}catch{}
+ emit(JSON.stringify({event:'release_result',health_verified:true,source_sha:sha,previous_sha:health.sha,telegram_confirmed:delivered,workers_ai_reserve:workersAi,financial_test_in_production:false,production_d1_queries:0}));
  if(!delivered)throw Error('release_deployed_but_delivery_unconfirmed');
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
