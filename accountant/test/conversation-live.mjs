@@ -16,6 +16,17 @@ const root=fileURLToPath(new URL('..',import.meta.url));
 const dir=await mkdtemp(path.join(tmpdir(),'brat-intent-live-'));
 let mf,calls=0,tokens=0,blocked=false,seq=1,passed=0;
 const latencies=[];
+let providerStatus=null,providerFailure=null;
+function classifyFailure(status,data){
+ const message=String(data?.error?.message??'').toLowerCase();
+ if(status===401)return 'authentication';
+ if(status===402)return 'credits';
+ if(status===429)return 'rate_limit';
+ if(/data policy|privacy|data collection/.test(message))return 'privacy_policy';
+ if(/no endpoints|no providers/.test(message))return 'no_eligible_provider';
+ if(/parameter|tool|schema/.test(message))return 'unsupported_request';
+ return 'http_error';
+}
 try{
  await build({entryPoints:[path.join(root,'test/entry.mjs')],outfile:path.join(dir,'bundle.mjs'),bundle:true,format:'esm',platform:'browser'});
  mf=new Miniflare({modules:true,scriptPath:path.join(dir,'bundle.mjs'),modulesRoot:dir,compatibilityDate:'2026-07-01',d1Databases:['DB'],bindings:{...modelBindings,TELEGRAM_BOT_TOKEN:'fixture',OWNER_CHAT_ID:'1001'},outboundService:async req=>{
@@ -28,8 +39,9 @@ try{
    const response=await fetch(req.url,{method:'POST',redirect:'error',headers:{authorization:req.headers.get('authorization'),'content-type':'application/json'},body:await req.text(),signal:AbortSignal.timeout(15000)});
    if(!response.ok)blocked=true; // Stop the entire smoke run on the first provider error.
    const data=await response.clone().json();tokens+=data.usage?.total_tokens??0;
+   if(!response.ok){providerStatus=response.status;providerFailure=classifyFailure(response.status,data);}
    return response;
-  }catch{blocked=true;return Response.json({error:{code:'smoke_transport'}},{status:503});}
+  }catch{blocked=true;providerFailure='transport_or_invalid_json';return Response.json({error:{code:'smoke_transport'}},{status:503});}
  }});
  const db=await mf.getD1Database('DB');
  await db.exec((await readFile(path.join(root,'migrations/0001.sql'),'utf8')).replace(/\n/g,' '));
@@ -75,6 +87,6 @@ try{
  }
  console.log(JSON.stringify({ok:true,scenarios:passed,provider:provider.name,model_calls:calls,groq_calls:provider.name==='groq'?calls:0,reported_total_tokens:tokens,turn_ms:latencies,telegram_network_calls:0,temporary_database:true}));
 }catch{
- console.log(JSON.stringify({ok:false,scenarios:passed,provider:provider.name,model_calls:calls,groq_calls:provider.name==='groq'?calls:0,reported_total_tokens:tokens,provider_blocked:blocked,telegram_network_calls:0,temporary_database:true}));
+ console.log(JSON.stringify({ok:false,scenarios:passed,provider:provider.name,model_calls:calls,groq_calls:provider.name==='groq'?calls:0,reported_total_tokens:tokens,provider_blocked:blocked,provider_status:providerStatus,provider_failure:providerFailure,telegram_network_calls:0,temporary_database:true}));
  process.exitCode=1;
 }finally{await mf?.dispose();await rm(dir,{recursive:true,force:true});}
