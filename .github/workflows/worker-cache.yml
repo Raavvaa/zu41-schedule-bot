@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      AUTHORIZED_SOURCE_SHA: 068b10fef70162a90f8fe5002ef72e63e80caa95
+      AUTHORIZED_SOURCE_SHA: 0164f4f53724c867e394abba25b3efd9ea12a3dc
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,7 +20,7 @@ jobs:
           path: release-control
       - uses: actions/checkout@v4
         with:
-          ref: 068b10fef70162a90f8fe5002ef72e63e80caa95
+          ref: 0164f4f53724c867e394abba25b3efd9ea12a3dc
           path: reviewed-source
       - uses: actions/setup-node@v4
         with:
@@ -38,18 +38,13 @@ jobs:
           CHAT_PROVIDER: openrouter
           OPENROUTER_MODEL: openrouter/free
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        run: node reviewed-source/accountant/test/conversation-live.mjs --opinion
+        run: node reviewed-source/accountant/test/conversation-live.mjs --primary
       - name: Verify Groq fallback with a simulated OpenRouter outage
         id: groq
         continue-on-error: true
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: node reviewed-source/accountant/test/conversation-live.mjs --fallback
-      - name: Require at least one live model to pass
-        env:
-          OPENROUTER_OUTCOME: ${{ steps.openrouter.outcome }}
-          GROQ_OUTCOME: ${{ steps.groq.outcome }}
-        run: test "$OPENROUTER_OUTCOME" = success || test "$GROQ_OUTCOME" = success
       - name: Probe optional Workers AI chat reserve on confirmed Free plan
         id: workers_ai
         continue-on-error: true
@@ -58,6 +53,11 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           FREE_PLAN_CONFIRMED: ${{ vars.FREE_PLAN_CONFIRMED }}
         run: node reviewed-source/accountant/test/workers-ai-live.mjs
+      - name: Require at least one live model to pass
+        env:
+          OPENROUTER_OUTCOME: ${{ steps.openrouter.outcome }}
+          GROQ_OUTCOME: ${{ steps.groq.outcome }}
+        run: test "$OPENROUTER_OUTCOME" = success || test "$GROQ_OUTCOME" = success
       - name: Update existing accountant and verify health and owner delivery
         if: github.ref == 'refs/heads/deploy/brat-accountant'
         env:
