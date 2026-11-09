@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      AUTHORIZED_SOURCE_SHA: 3a5f34ff3438010d5dd07466e7606d15f58a378b
+      AUTHORIZED_SOURCE_SHA: 5d5d06ee490ec792f287f8e370ed72bfffce444d
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,7 +20,7 @@ jobs:
           path: release-control
       - uses: actions/checkout@v4
         with:
-          ref: 3a5f34ff3438010d5dd07466e7606d15f58a378b
+          ref: 5d5d06ee490ec792f287f8e370ed72bfffce444d
           path: reviewed-source
       - uses: actions/setup-node@v4
         with:
