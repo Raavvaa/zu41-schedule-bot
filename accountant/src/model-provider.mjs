@@ -29,9 +29,9 @@ export function modelCandidates(env){
 export function completionRequest(provider,messages,tools,remaining){
  const options=provider.name==='openrouter'
   ?{max_tokens:1600,provider:{require_parameters:true,data_collection:'deny'}}
-  :{max_completion_tokens:1600,parallel_tool_calls:false,...(/^openai\/gpt-oss-(?:20|120)b$/.test(provider.model)?{reasoning_format:'hidden',reasoning_effort:'low'}:{})};
+  :{max_completion_tokens:1600,...(tools.length?{parallel_tool_calls:false}:{}),...(/^openai\/gpt-oss-(?:20|120)b$/.test(provider.model)?{include_reasoning:false,reasoning_effort:'low'}:{})};
  return {method:'POST',redirect:'manual',headers:{Authorization:'Bearer '+provider.key,'content-type':'application/json'},
-  body:JSON.stringify({model:provider.model,messages,tools,tool_choice:'auto',temperature:0.2,...options}),
+  body:JSON.stringify({model:provider.model,messages,...(tools.length?{tools,tool_choice:'auto'}:{}),temperature:0.2,...options}),
   signal:AbortSignal.timeout(Math.min(15000,remaining))};
 }
 
@@ -51,6 +51,9 @@ function validMessage(message,tools){
  if(typeof call?.id!=='string'||!call.id||!tools.some(t=>t.function.name===call.function?.name)||typeof call.function.arguments!=='string')return false;
  try{const args=JSON.parse(call.function.arguments);return args!=null&&typeof args==='object'&&!Array.isArray(args);}catch{return false;}
 }
+export function toolGenerationFailed(status,data){
+ return status===400&&(data?.error?.code==='tool_use_failed'||data?.error?.failed_generation!=null);
+}
 
 function workersText(response){
  if(typeof response?.response==='string')return response.response;
@@ -69,7 +72,8 @@ export async function workersChat(ai,text,timeout){
 
 export function modelSession(env,day,deadline,userText){
  const providers=modelCandidates(env).filter(p=>p.name!=='workers_ai'||userText!==null);
- let index=0,attempts=0,formatRetry=false,last='brain_config';
+ const smallTalk=/^(?:(?:привет|салам)(?:[, ]+брат)?[.!?]?\s*)?(?:(?:как (?:ты|дела)|ты здесь)[?!.]?)?$/iu.test(userText??'');
+ let index=0,attempts=0,formatRetry=false,plainRetry=false,last='brain_config';
  return async (messages,tools)=>{
   while(index<providers.length&&attempts<6){
    const provider=providers[index],left=providers.length-index-1;
@@ -89,11 +93,14 @@ export function modelSession(env,day,deadline,userText){
     }else{
      // Only the originating provider can read its opaque reasoning state.
      const transcript=index===0?messages:messages.map(({reasoning_details,...message})=>message);
-     const res=await fetch(provider.url,completionRequest(provider,transcript,tools,timeout));status=res.status;
+     const noToolTranscript=!messages.some(m=>m.role==='tool'||m.tool_calls?.length);
+     const requestedTools=provider.name==='groq'&&noToolTranscript&&(plainRetry||index>0&&userText!==null&&smallTalk)?[]:tools;
+     const res=await fetch(provider.url,completionRequest(provider,transcript,requestedTools,timeout));status=res.status;
      const data=await res.json().catch(()=>null);
-     if(res.ok&&validMessage(data?.choices?.[0]?.message,tools))return {message:data.choices[0].message};
-     if(status===400&&data?.error?.code==='tool_use_failed'&&!formatRetry&&!left){
+     if(res.ok&&validMessage(data?.choices?.[0]?.message,requestedTools))return {message:data.choices[0].message};
+     if(toolGenerationFailed(status,data)&&provider.name==='groq'&&requestedTools.length&&!formatRetry){
       formatRetry=true;
+      plainRetry=userText!==null&&noToolTranscript;
       messages.push({role:'system',content:'Предыдущая генерация не прошла проверку формата. Для обычного разговора ответь текстом. Для записи вызови только один инструмент с точными именами параметров.'});
       continue;
      }

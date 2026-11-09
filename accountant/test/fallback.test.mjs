@@ -48,6 +48,12 @@ test('404, 429 and 503 each produce one conversational reply through Groq',async
   responses=[fail(status),say('На связи, брат.')];assert.equal((await turn('Как ты?')).text,'На связи, брат.');
  }
  assert.deepEqual(hosts(),[...chain,...chain,...chain]);assert.equal(await count('outbox'),3);assert.equal(await count('transactions'),0);
+ assert.ok(calls.filter(r=>r.host==='api.groq.com').every(r=>r.body.tools===undefined));
+});
+test('a rejected Groq tool generation gets one text repair on a conversational turn',async()=>{
+ responses=[fail(503),Response.json({error:{failed_generation:'invalid fixture tool'}},{status:400}),say('Рад тебя слышать.')];
+ assert.equal((await turn('Ну как ты там, брат?')).text,'Рад тебя слышать.');
+ assert.deepEqual(hosts(),[...chain,chain[1]]);assert.ok(calls[1].body.tools.length);assert.equal(calls[2].body.tools,undefined);assert.equal(await count('drafts'),0);
 });
 test('malformed primary result falls back to a single draft requiring confirmation',async()=>{
  responses=[say(''),tool('propose_transaction',{actions:[{type:'income',wallet:'pocket',currency:'RUB',amount:'723',to:null,note:'Тестовый доход'}]})];

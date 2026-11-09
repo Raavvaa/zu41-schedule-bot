@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {modelProvider,modelSession,completionRequest,toolAssistant} from '../src/model-provider.mjs';
+const tools=[{type:'function',function:{name:'fixture',parameters:{type:'object'}}}];
 
 test('Groq remains the default even if an OpenRouter key is present',()=>{
  const p=modelProvider({GROQ_API_KEY:'groq-fixture',OPENROUTER_API_KEY:'router-fixture'});
@@ -21,16 +22,18 @@ test('only explicit free model IDs are accepted for OpenRouter',()=>{
 });
 test('OpenRouter keeps tools optional and excludes providers collecting data',()=>{
  const p=modelProvider({CHAT_PROVIDER:'openrouter',OPENROUTER_API_KEY:'fixture'});
- const request=completionRequest(p,[{role:'user',content:'fixture'}],[],5000),body=JSON.parse(request.body);
+ const request=completionRequest(p,[{role:'user',content:'fixture'}],tools,5000),body=JSON.parse(request.body);
  assert.equal(request.redirect,'manual');assert.equal(request.headers.Authorization,'Bearer fixture');
  assert.equal(body.tool_choice,'auto');assert.equal(body.parallel_tool_calls,undefined);assert.equal(body.max_tokens,1600);
  assert.equal(body.max_completion_tokens,undefined);assert.deepEqual(body.provider,{require_parameters:true,data_collection:'deny'});
  assert.equal(request.body.includes('Bearer'),false);assert.equal(body.models,undefined);
 });
 test('Groq retains its supported output limit',()=>{
- const body=JSON.parse(completionRequest(modelProvider({GROQ_API_KEY:'fixture'}),[],[],5000).body);
+ const p=modelProvider({GROQ_API_KEY:'fixture'});
+ const body=JSON.parse(completionRequest(p,[],tools,5000).body);
  assert.equal(body.max_completion_tokens,1600);assert.equal(body.parallel_tool_calls,false);assert.equal(body.max_tokens,undefined);assert.equal(body.provider,undefined);
- assert.equal(body.reasoning_format,'hidden');assert.equal(body.reasoning_effort,'low');
+ assert.equal(body.reasoning_format,undefined);assert.equal(body.include_reasoning,false);assert.equal(body.reasoning_effort,'low');
+ const plain=JSON.parse(completionRequest(p,[],[],5000).body);assert.equal(plain.tool_choice,undefined);assert.equal(plain.tools,undefined);
 });
 test('tool continuation preserves opaque reasoning without inventing it',()=>{
  const message={content:null,tool_calls:[{id:'fixture'}],reasoning_details:[{type:'reasoning.encrypted',data:'fixture'}]};

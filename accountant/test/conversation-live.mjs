@@ -9,7 +9,7 @@ import {Miniflare} from 'miniflare';
 import {build} from 'esbuild';
 import {statedAmounts} from '../src/brain.mjs';
 
-const {modelProvider}=await import('../src/model-provider.mjs');
+const {modelProvider,toolGenerationFailed}=await import('../src/model-provider.mjs');
 const forcedFallback=process.argv.includes('--fallback');
 const provider=modelProvider(forcedFallback?{...process.env,CHAT_PROVIDER:'groq'}:process.env);
 const modelBindings=provider.name==='openrouter'?{CHAT_PROVIDER:'openrouter',OPENROUTER_API_KEY:provider.key,OPENROUTER_MODEL:provider.model}:{GROQ_API_KEY:provider.key,GROQ_MODEL:provider.model,...(forcedFallback?{CHAT_PROVIDER:'openrouter',OPENROUTER_API_KEY:'fixture'}:{})};
@@ -49,7 +49,7 @@ try{
    if(!response.ok){
     providerStatus=response.status;providerFailure=classifyFailure(response.status,data);
     // Let the production client make its one bounded repair. Never retry limits.
-    if(!(provider.name==='groq'&&response.status===400&&data?.error?.code==='tool_use_failed'&&formatRetries++===0))blocked=true;
+    if(!(provider.name==='groq'&&toolGenerationFailed(response.status,data)&&formatRetries++===0))blocked=true;
    }
    return response;
   }catch{blocked=true;providerFailure='transport_or_invalid_json';return Response.json({error:{code:'smoke_transport'}},{status:503});}
