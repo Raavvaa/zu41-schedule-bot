@@ -24,7 +24,7 @@ after(async()=>mf.dispose());
 beforeEach(async()=>{
  now=1800000000000;seq=0;sent=[];models=[];modelRequests=[];
  // Legacy behavior fixtures bypass waiting; dedicated queue tests use 4000ms.
- env.PEER_DEBOUNCE_MS='0';delete env.FREE_ONLY;delete env.SLEEP;
+ env.PEER_DEBOUNCE_MS='0';delete env.FREE_ONLY;delete env.SLEEP;delete env.AI;delete env.WORKERS_AI_ENABLED;delete env.WORKERS_AI_MODEL;delete env.WORKERS_AI_TIMEOUT_MS;
  for(const table of ['connections','chats','messages','facts','inbox','proposals','outbox','usage','provider_usage','chat_style','chat_changes','chat_facts','background_jobs','fact_extraction','conversation_state','chat_aliases','providers','audit'])await run(env,'DELETE FROM '+table);
  await run(env,'UPDATE settings SET paused=0,lock_token=NULL,lock_until=0,cleanup_at=0');env.NOW=()=>now;
  env.FETCH=async(url,options={})=>{
@@ -362,3 +362,20 @@ test('deployment probe reports exhausted budget without resetting usage or disab
 test('deployment probe still fails on unclassified network failure',async()=>{
  models.push(new Error('network'),new Error('network'));const r=await worker.fetch(new Request('https://fixture/ops/probe',{method:'POST',headers:{authorization:'Bearer fixture-admin'}}),env,{});assert.equal(r.status,503);
 });
+
+ test('Workers AI binding is first and normalizes JSON tool routing',async()=>{
+ env.FREE_ONLY='true';env.WORKERS_AI_ENABLED='true';let payload;env.AI={run:async(model,body)=>{assert.equal(model,'@cf/meta/llama-3.3-70b-instruct-fp8-fast');payload=body;return {response:JSON.stringify({action:'answer_owner',params:{},confidence:'high',explanation:'Ок'}),usage:{total_tokens:30}};}};
+ const r=await completion(env,[{role:'user',content:'Привет'}],{tools:[{type:'function',function:{name:'route',parameters:{type:'object'}}}]});assert.equal(r.provider,'cloudflare');assert.equal(r.message.tool_calls[0].function.name,'route');assert.equal(payload.response_format.type,'json_object');assert.equal(payload.model,undefined);assert.equal(modelRequests.length,0);
+ });
+ test('Workers AI quota failure falls back and respects provider cooldown',async()=>{
+ env.WORKERS_AI_ENABLED='true';let calls=0;env.AI={run:async()=>{calls++;throw Error('3036 daily allocation exceeded');}};assert.equal((await completion(env,[])).provider,'groq');assert.equal((await completion(env,[])).provider,'groq');assert.equal(calls,1);
+ });
+ test('Workers AI timeout falls back without leaking binding errors',async()=>{
+ env.WORKERS_AI_ENABLED='true';env.WORKERS_AI_TIMEOUT_MS='5';env.AI={run:()=>new Promise(()=>{})};assert.equal((await completion(env,[])).provider,'groq');
+ });
+ test('Workers AI unreviewed model is blocked and missing binding is harmless',async()=>{
+ env.WORKERS_AI_ENABLED='true';assert.equal((await completion(env,[])).provider,'groq');env.AI={run:async()=>{throw Error('must not call');}};env.WORKERS_AI_MODEL='@cf/paid/unreviewed';assert.equal((await completion(env,[])).provider,'groq');
+ });
+ test('Workers AI internal budget falls back independently',async()=>{
+ env.WORKERS_AI_ENABLED='true';env.AI={run:async()=>{throw Error('must not call');}};await run(env,'INSERT INTO provider_usage(day,provider,requests,tokens) VALUES(?,?,?,?)',[new Date(now).toISOString().slice(0,10),'cloudflare',500,0]);assert.equal((await completion(env,[])).provider,'groq');
+ });

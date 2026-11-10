@@ -68,7 +68,7 @@ export async function maintenance(env){
  await batch(env,[['DELETE FROM messages WHERE at<?',[now-72*3600000]],["DELETE FROM inbox WHERE state='done' AND at<?",[now-7*86400000]],["UPDATE proposals SET status='expired',payload='{}' WHERE status='pending' AND expires_at<?",[now]],["UPDATE outbox SET state='expired',payload='{}' WHERE state='pending' AND expires_at<?",[now]],["UPDATE proposals SET payload='{}' WHERE status<>'pending' AND at<?",[now-86400000]],["UPDATE outbox SET payload='{}' WHERE state IN ('sent','failed','cancelled','expired') AND at<?",[now-86400000]],['DELETE FROM audit WHERE at<?',[now-30*86400000]],['UPDATE settings SET cleanup_at=? WHERE id=1',[now]]]);
 }
 
-export const providerDefaults={groq:[200000,500],siliconflow:[500000,1000],openrouter:[50000,100]};
+export const providerDefaults={cloudflare:[200000,500],groq:[200000,500],siliconflow:[500000,1000],openrouter:[50000,100]};
 export async function budgets(env){
  const day=new Date(clock(env)).toISOString().slice(0,10),rows=await all(env,'SELECT * FROM provider_usage WHERE day=?',[day]);
  return Object.entries(providerDefaults).map(([provider,[tokens,requests]])=>{const used=rows.find(r=>r.provider===provider)||{};const limit=(suffix,fallback)=>{const n=Number(env[provider.toUpperCase()+'_DAILY_'+suffix]);return Number.isFinite(n)&&n>=0&&env[provider.toUpperCase()+'_DAILY_'+suffix]!==undefined?Math.floor(n):fallback;};return {provider,tokens:Math.max(0,limit('TOKENS',tokens)-(used.tokens||0)),requests:Math.max(0,limit('REQUESTS',requests)-(used.requests||0))};});

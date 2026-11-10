@@ -127,3 +127,12 @@ Webhook будит обработчик через `waitUntil`; cron восст�
 статус `available:false`, а установка исправлений управления не отключает Worker.
 Это не успешная проверка доступности модели: в отчёте печатается
 `PANDA_MODEL_LIMITED`; обязательные предварительные live-тесты не пропускаются.
+
+## Workers AI (бесплатная цепочка)
+
+Workers AI → Groq → OpenRouter Free. Binding `AI`, без нового API-ключа.
+Модель: `@cf/meta/llama-3.3-70b-instruct-fp8-fast`; другие модели требуют проверки перед добавлением в разрешённый список. Таймаут `WORKERS_AI_TIMEOUT_MS=4500`.
+`WORKERS_AI_ENABLED=false` отключает канал. Внутренние ограничения `CLOUDFLARE_DAILY_TOKENS=200000`, `CLOUDFLARE_DAILY_REQUESTS=500` не являются квотой провайдера. Реальная бесплатная квота Cloudflare — 10000 нейронов на аккаунт в сутки; это не токены и не сообщения. На Workers Free после исчерпания запросы отклоняются. Платный план не включаем.
+https://developers.cloudflare.com/workers-ai/platform/pricing/
+
+Таймаут binding ограничивает ожидание ответа; уже запущенная инференс-задача может продолжить расход квоты. Фоновые SiliconFlow-задачи в FREE_ONLY по-прежнему выключены.

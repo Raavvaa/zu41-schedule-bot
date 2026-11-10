@@ -25,7 +25,12 @@
     "SILICONFLOW_CHAT_MODEL": "Qwen/Qwen2.5-7B-Instruct",
     "SILICONFLOW_EMBED_MODEL": "Qwen/Qwen3-Embedding-0.6B",
     "FREE_ONLY": "true",
-    "PEER_DEBOUNCE_MS": "4000"
+    "PEER_DEBOUNCE_MS": "4000",
+    "WORKERS_AI_ENABLED": "true",
+    "WORKERS_AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "WORKERS_AI_TIMEOUT_MS": "4500",
+    "CLOUDFLARE_DAILY_TOKENS": "200000",
+    "CLOUDFLARE_DAILY_REQUESTS": "500"
   },
   "d1_databases": [
     {
@@ -34,5 +39,8 @@
       "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations"
     }
-  ]
+  ],
+  "ai": {
+    "binding": "AI"
+  }
 }
