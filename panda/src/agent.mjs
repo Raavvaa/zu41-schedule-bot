@@ -24,7 +24,7 @@ export async function proposalCard(env,event,scope,kind,payload){
  const p=await createProposal(env,event.id,scope,kind,payload),c=await getChat(env,scope);
  if(p.status!=='pending')return 'Это поручение уже обработано.';
  let text;
- if(kind==='mode')text=`Чат: ${c.title}\nРежим: ${payload.mode==='auto'?'автоответ':'черновики тебе'} на ${payload.minutes} мин.\n${payload.instruction||'Коротко и естественно; новые обязательства согласовывать.'}\n\nКонтекст этого чата будет обрабатываться Groq/OpenRouter. Включай, если участники согласны. Можно остановить: «панда, стоп».`;
+ if(kind==='mode')text=`Чат: ${c.title}\nРежим: ${payload.mode==='auto'?'автоответ':'черновики тебе'} на ${payload.minutes} мин.\n${payload.instruction||'Коротко и естественно; новые обязательства согласовывать.'}\n\nКонтекст этого чата будет обрабатываться Groq/SiliconFlow/OpenRouter. Включай, если участники согласны. Можно остановить: «панда, стоп».`;
  else if(kind==='avatar')text='Поставить приложенное фото на твой профиль Telegram?';
  else text=`${c.kind==='channel'?'Пост в':'Сообщение для'} ${c.title}:\n\n${payload.text}\n\nОтправить?`;
  if(kind==='avatar')await queue(env,'card:'+p.id,'',{method:'sendPhoto',payload:{chat_id:env.OWNER_ID,photo:payload.file_id,caption:text,reply_markup:proposalMarkup(p)},expires:p.expires_at});

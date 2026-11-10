@@ -5,7 +5,7 @@ import {createHmac} from 'node:crypto';
 const e=process.env,name='panda-personal-agent';
 if(e.GITHUB_REPOSITORY!=='Raavvaa/zu41-schedule-bot'||e.GITHUB_REF!=='refs/heads/feat/panda-agent-20261110'||e.FREE_PLAN_CONFIRMED!=='true')throw Error('Repository, branch or free-plan gate failed');
 for(const k of ['CLOUDFLARE_API_TOKEN','CLOUDFLARE_ACCOUNT_ID','PANDA_BOT_TOKEN','OWNER_ID','ADMIN_SECRET'])if(!e[k])throw Error('Missing secret '+k);
-if(!e.GROQ_API_KEY&&!e.OPENROUTER_API_KEY)throw Error('No model credentials');
+if(!e.GROQ_API_KEY&&!e.OPENROUTER_API_KEY&&!e.SILICONFLOW_API_KEY)throw Error('No model credentials');
 if(!/^[1-9]\d*$/.test(e.OWNER_ID)||!Number.isSafeInteger(Number(e.OWNER_ID)))throw Error('Invalid owner secret');
 const sha=spawnSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).stdout.trim();
 if(!/^[a-f0-9]{40}$/.test(sha))throw Error('Invalid source revision');
@@ -42,7 +42,7 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 let activated=false;
 try{
  config.vars.ENABLED='false';await save();cli(['deploy']);
- cli(['secret','bulk'],JSON.stringify({TELEGRAM_BOT_TOKEN:e.PANDA_BOT_TOKEN,OWNER_ID:e.OWNER_ID,GROQ_API_KEY:e.GROQ_API_KEY||'',OPENROUTER_API_KEY:e.OPENROUTER_API_KEY||'',WEBHOOK_SECRET:hookSecret,ADMIN_SECRET:adminSecret}));
+ cli(['secret','bulk'],JSON.stringify({...(e.SILICONFLOW_API_KEY?{SILICONFLOW_API_KEY:e.SILICONFLOW_API_KEY}:{}),TELEGRAM_BOT_TOKEN:e.PANDA_BOT_TOKEN,OWNER_ID:e.OWNER_ID,GROQ_API_KEY:e.GROQ_API_KEY||'',OPENROUTER_API_KEY:e.OPENROUTER_API_KEY||'',WEBHOOK_SECRET:hookSecret,ADMIN_SECRET:adminSecret}));
  config.vars.ENABLED='true';await save();cli(['deploy']);activated=true;
  let health;for(let i=0;i<12;i++){try{health=await request(url+'/health');if(health.version===sha&&health.enabled)break;}catch{}await pause(1500);}
  if(health?.version!==sha||!health.enabled)throw Error('Live Panda version not confirmed');

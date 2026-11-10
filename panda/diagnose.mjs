@@ -34,3 +34,7 @@ console.log('PANDA_DIAG_DIALOGUE '+JSON.stringify({
 for(const c of connections){try{const live=await tg('getBusinessConnection',{business_connection_id:c.id});console.log('PANDA_DIAG_CONNECTION '+JSON.stringify({stored_enabled:!!c.enabled,live_enabled:!!live.is_enabled,owner_matches:String(live.user?.id)===String(e.OWNER_ID),can_reply:!!live.rights?.can_reply,can_read:!!live.rights?.can_read_messages}));}catch{console.log('PANDA_DIAG_CONNECTION lookup_failed');}}
 
 if((await sql("SELECT name FROM sqlite_master WHERE type='table' AND name='provider_usage'")).length)console.log('PANDA_PROVIDER_BUDGET '+JSON.stringify(await sql('SELECT provider,requests,tokens FROM provider_usage WHERE day=?',[day])));
+
+// Model availability is key-specific; never print server bodies or credentials.
+if(e.SILICONFLOW_API_KEY){try{const r=await fetch((e.SILICONFLOW_BASE_URL||'https://api.siliconflow.com/v1').replace(/\/$/,'')+'/models',{headers:{Authorization:'Bearer '+e.SILICONFLOW_API_KEY},signal:AbortSignal.timeout(5000)});const data=await r.json();const ids=new Set((data.data||[]).map(m=>m.id));console.log('PANDA_SILICONFLOW_MODELS '+JSON.stringify({status:r.status,chat_available:ids.has(e.SILICONFLOW_CHAT_MODEL||'Qwen/Qwen2.5-7B-Instruct'),embedding_available:ids.has(e.SILICONFLOW_EMBED_MODEL||'BAAI/bge-m3')}));}catch{console.log('PANDA_SILICONFLOW_MODELS network_timeout');}}
+else console.log('SiliconFlow availability not checked: supply SILICONFLOW_API_KEY in diagnostic environment.');

@@ -149,7 +149,7 @@ async function applyProposal(env,event,p){
 async function callback(env,event){
  const [op,id]=event.data.split(':');let text='Неизвестная кнопка.';
  if(op==='chat'){
-  const c=await getChat(env,id);if(c){await queue(env,'reply:'+event.id,`${c.title}\nРежим: ${c.mode}.\nКод чата для импорта: ${c.id}\nПри включении текст чата обрабатывается Groq/OpenRouter; нужно согласие участников.`,{markup:{inline_keyboard:c.kind==='channel'?[]:[[{text:'📝 Черновики на 2 ч',callback_data:'draft:'+c.id},{text:'🤖 Авто на 2 ч',callback_data:'auto:'+c.id}],[{text:'⏹ Стоп',callback_data:'stop:'+c.id}]]}});return;}
+  const c=await getChat(env,id);if(c){await queue(env,'reply:'+event.id,`${c.title}\nРежим: ${c.mode}.\nКод чата для импорта: ${c.id}\nПри включении текст чата обрабатывается Groq/SiliconFlow/OpenRouter; нужно согласие участников.`,{markup:{inline_keyboard:c.kind==='channel'?[]:[[{text:'📝 Черновики на 2 ч',callback_data:'draft:'+c.id},{text:'🤖 Авто на 2 ч',callback_data:'auto:'+c.id}],[{text:'⏹ Стоп',callback_data:'stop:'+c.id}]]}});return;}
  }else if(['draft','auto'].includes(op)){const c=await getChat(env,id);if(c){text=await proposalCard(env,event,id,'mode',{mode:op,minutes:120,instruction:'Коротко и естественно. Новые обещания, неизвестные факты и чувствительные темы согласовывать со мной.'});}}
  else if(op==='yes')text=await applyProposal(env,event,await one(env,'SELECT * FROM proposals WHERE id=?',[id]));
  else if(op==='no'){await run(env,"UPDATE proposals SET status='cancelled' WHERE id=? AND status='pending'",[id]);text='Отменено.';}
@@ -261,7 +261,7 @@ export async function drain(env,deadline=Date.now()+24000){
 export default {
  async fetch(request,env,ctx){
   const url=new URL(request.url);
-  if(url.pathname==='/health')return Response.json({ok:true,service:'panda',version:env.SOURCE_SHA||'development',enabled:env.ENABLED==='true',providers:[env.GROQ_API_KEY?'groq':null,env.OPENROUTER_API_KEY?'openrouter':null].filter(Boolean),auto_default:false});
+  if(url.pathname==='/health')return Response.json({ok:true,service:'panda',version:env.SOURCE_SHA||'development',enabled:env.ENABLED==='true',providers:[env.SILICONFLOW_API_KEY?'siliconflow':null,env.GROQ_API_KEY?'groq':null,env.OPENROUTER_API_KEY?'openrouter':null].filter(Boolean),auto_default:false});
   if(env.ENABLED!=='true')return new Response('disabled',{status:503});
   if(url.pathname==='/ops/probe'&&request.method==='POST'){
    if(!env.ADMIN_SECRET||request.headers.get('authorization')!=='Bearer '+env.ADMIN_SECRET)return new Response('forbidden',{status:403});

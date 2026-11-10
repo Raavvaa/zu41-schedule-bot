@@ -31,3 +31,5 @@ export async function completion(env,messages,{tools,json=false,deadline=Date.no
  }
  throw new ModelUnavailable(failures,await budgets(env));
 }
+
+export async function embedding(env,text){const p=providerConfig(env).find(p=>p.name==='siliconflow');if(!p.key)return null;const day=await reserveProvider(env,p.name);if(!day)return null;try{const r=await (env.FETCH||fetch)(p.base+'/embeddings',{method:'POST',headers:{Authorization:'Bearer '+p.key,'content-type':'application/json'},body:JSON.stringify({model:env.SILICONFLOW_EMBED_MODEL||'BAAI/bge-m3',input:String(text).slice(0,4000)}),signal:AbortSignal.timeout(1500)});if(!r.ok)return null;const d=await r.json(),v=d.data?.[0]?.embedding;await accountProvider(env,p.name,day,d.usage?.total_tokens||new TextEncoder().encode(text).length);return Array.isArray(v)&&v.length>0&&v.length<=4096&&v.every(x=>typeof x==='number'&&Number.isFinite(x))?v:null;}catch{return null;}}
