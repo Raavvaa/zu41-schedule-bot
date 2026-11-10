@@ -7,11 +7,13 @@ import {completion} from '../src/providers.mjs';
 import {all,run,key} from '../src/store.mjs';
 import {acceptUpdate,drain} from '../src/index.mjs';
 import {repeatedReply} from '../src/dialogue.mjs';
+const configured=JSON.parse(await readFile(new URL('../wrangler.jsonc',import.meta.url),'utf8')).vars;
+const models=Object.fromEntries(['GROQ_MODEL','SILICONFLOW_CHAT_MODEL','OPENROUTER_MODEL'].map(name=>[name,process.env[name]||configured[name]]));
 const mf=new Miniflare({modules:true,script:'export default {fetch(){return new Response("test")}}',d1Databases:['DB'],compatibilityDate:'2026-07-30'});
 let phase='greeting',requests=0;const providers=new Set(),sent=[];
 try{
  const DB=await mf.getD1Database('DB');for(const file of (await readdir(new URL('../migrations/',import.meta.url))).sort())await DB.exec((await readFile(new URL('../migrations/'+file,import.meta.url),'utf8')).replace(/\n/g,' '));
- const env={DB,OWNER_ID:'101',TELEGRAM_BOT_TOKEN:'synthetic-only',GROQ_API_KEY:process.env.GROQ_API_KEY,SILICONFLOW_API_KEY:process.env.SILICONFLOW_API_KEY,SILICONFLOW_TIMEOUT_MS:process.env.SILICONFLOW_TIMEOUT_MS,OPENROUTER_API_KEY:process.env.OPENROUTER_API_KEY,FETCH:async(url,opts)=>{
+ const env={...models,DB,OWNER_ID:'101',TELEGRAM_BOT_TOKEN:'synthetic-only',GROQ_API_KEY:process.env.GROQ_API_KEY,SILICONFLOW_API_KEY:process.env.SILICONFLOW_API_KEY,SILICONFLOW_TIMEOUT_MS:process.env.SILICONFLOW_TIMEOUT_MS,OPENROUTER_API_KEY:process.env.OPENROUTER_API_KEY,FETCH:async(url,opts)=>{
   if(url==='https://api.telegram.org/botsynthetic-only/sendMessage'){const body=JSON.parse(opts.body);sent.push(body);return Response.json({ok:true,result:{message_id:sent.length}});}
   assert.ok(url==='https://api.siliconflow.com/v1/chat/completions'||url==='https://api.groq.com/openai/v1/chat/completions'||url==='https://openrouter.ai/api/v1/chat/completions');if(++requests>10)throw Error('Live request limit');const r=await fetch(url,opts);if(r.ok)providers.add(url.includes('groq.com')?'groq':url.includes('siliconflow.com')?'siliconflow':'openrouter');return r;
  }};
@@ -34,6 +36,6 @@ try{
  for(let i=1;i<peerSent.length;i++)assert.ok(!repeatedReply(peerSent[i],peerSent.slice(0,i)),'No repeated greeting or identical answer');
  assert.equal((await all(env,"SELECT * FROM proposals WHERE scope=?",[scope])).length,0,'Ordinary chat must not ask for approval in auto mode');
  assert.ok(!sent.some(x=>/недоступна|надёжный черновик/i.test(x.text)),'No silent model/format failure');
- console.log('PANDA_LIVE_TEST '+JSON.stringify({passed:6,requests,providers:[...providers],telegram_calls:0,synthetic_only:true,dialogue_turns:3,dialogue_replies:peerSent.length,repeated_replies:0,ordinary_approval_cards:0}));
+ console.log('PANDA_LIVE_TEST '+JSON.stringify({passed:6,requests,providers:[...providers],models,telegram_calls:0,synthetic_only:true,dialogue_turns:3,dialogue_replies:peerSent.length,repeated_replies:0,ordinary_approval_cards:0}));
 }catch(error){console.error('PANDA_LIVE_TEST '+JSON.stringify({failed:true,phase,requests,kind:error.kind||error.code||'validation',failures:error.failures||[]}));process.exitCode=1;}
 finally{await mf.dispose();}
