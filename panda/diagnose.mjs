@@ -17,4 +17,11 @@ const sql=async(statement,params=[])=>{if(!/^SELECT\s/i.test(statement))throw Er
 const connections=await sql('SELECT id,enabled,rights FROM connections');
 const state={connections:connections.length,chats:await sql('SELECT kind,mode,count(*) AS n FROM chats GROUP BY kind,mode'),inbox:await sql('SELECT state,count(*) AS n FROM inbox GROUP BY state'),outbox:await sql('SELECT state,error,count(*) AS n FROM outbox GROUP BY state,error'),audit:await sql('SELECT kind,count(*) AS n FROM audit GROUP BY kind')};
 console.log('PANDA_DIAG_STATE '+JSON.stringify(state));
+const since=Date.now()-2*3600000;
+console.log('PANDA_DIAG_DIALOGUE '+JSON.stringify({
+ deliveries:await sql("SELECT mode,state,count(*) AS n,sum(CASE WHEN json_extract(payload,'$.text')='Привет!' THEN 1 ELSE 0 END) AS repeated_greeting FROM outbox WHERE scope<>'owner' AND at>? GROUP BY mode,state",[since]),
+ duplicate_text_groups:await sql("SELECT count(*) AS n FROM (SELECT scope,json_extract(payload,'$.text'),count(*) AS copies FROM outbox WHERE scope<>'owner' AND state='sent' AND at>? GROUP BY scope,json_extract(payload,'$.text') HAVING copies>1)",[since]),
+ context_rows:await sql("SELECT role,manual,count(*) AS n FROM messages WHERE scope<>'owner' AND at>? GROUP BY role,manual",[since]),
+ proposals:await sql("SELECT kind,status,count(*) AS n FROM proposals WHERE at>? GROUP BY kind,status",[since])
+}));
 for(const c of connections){try{const live=await tg('getBusinessConnection',{business_connection_id:c.id});console.log('PANDA_DIAG_CONNECTION '+JSON.stringify({stored_enabled:!!c.enabled,live_enabled:!!live.is_enabled,owner_matches:String(live.user?.id)===String(e.OWNER_ID),can_reply:!!live.rights?.can_reply,can_read:!!live.rights?.can_read_messages}));}catch{console.log('PANDA_DIAG_CONNECTION lookup_failed');}}
