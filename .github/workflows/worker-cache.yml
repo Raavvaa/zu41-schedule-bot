@@ -32,7 +32,10 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          PANDA_BOT_TOKEN: ${{ secrets.PANDA_BOT_TOKEN }}
+          PANDA_BOT_TOKEN: ${{ secrets.PANDA_REPLACEMENT_BOT_TOKEN }}
+          EXPECTED_PANDA_BOT_ID: '8976655600'
+          PREVIOUS_PANDA_BOT_TOKEN: ${{ secrets.PANDA_BOT_TOKEN }}
+          EXPECTED_PREVIOUS_PANDA_BOT_ID: '9235352888'
           OWNER_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ADMIN_SECRET: ${{ secrets.ADMIN_SECRET }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}

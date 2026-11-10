@@ -18,17 +18,24 @@ const cf=async(path,method='GET',body)=>(await request('https://api.cloudflare.c
 const tg=async(method,body)=>(await request('https://api.telegram.org/bot'+e.PANDA_BOT_TOKEN+'/'+method,{method:'POST',body:body??{}})).result;
 const bot=await tg('getMe');
 if(!bot.is_bot||String(bot.id)!==e.PANDA_BOT_TOKEN.split(':')[0])throw Error('Panda identity check failed');
+if(String(bot.id)!==e.EXPECTED_PANDA_BOT_ID)throw Error('Unexpected replacement bot identity');
+console.log('PANDA_IDENTITY '+JSON.stringify({username:bot.username,business_mode_enabled:!!bot.can_connect_to_business}));
+// Update IDs, file IDs and business connections belong to one bot identity.
+// Preserve the former database; never replay its pending work under a new token.
+const databaseName=name+'-'+bot.id;
 const hookSecret=createHmac('sha256',e.ADMIN_SECRET).update('panda-webhook:'+bot.id).digest('hex');
 const adminSecret=createHmac('sha256',e.ADMIN_SECRET).update('panda-ops:'+bot.id).digest('hex');
-let db=(await cf('/d1/database')).find(x=>x.name===name);
-if(!db)db=await cf('/d1/database','POST',{name});
-if(db.name!==name||!db.uuid)throw Error('Panda database guard');
+let db=(await cf('/d1/database')).find(x=>x.name===databaseName);
+if(!db)db=await cf('/d1/database','POST',{name:databaseName});
+if(db.name!==databaseName||!db.uuid)throw Error('Panda database guard');
 const sql=async(statement,params=[])=>{const r=await cf('/d1/database/'+db.uuid+'/query','POST',{sql:statement,params});if(!r?.[0]?.success)throw Error('Panda schema/query failed');return r[0].results;};
 for(const statement of (await readFile('panda/migrations/0001.sql','utf8')).split(';').filter(x=>x.trim()))await sql(statement);
 const sub=await cf('/workers/subdomain'),url=`https://${name}.${sub.subdomain}.workers.dev`;
+const existingHook=await tg('getWebhookInfo');
+if(existingHook.url&&existingHook.url!==url+'/telegram')throw Error('Replacement bot already has a different webhook; no cutover performed');
 const config=JSON.parse(await readFile('panda/wrangler.jsonc','utf8'));
 if(config.name!==name||config.d1_databases.length!==1||config.d1_databases[0].database_name!==name)throw Error('Isolated resource guard');
-config.d1_databases[0].database_id=db.uuid;config.vars={...config.vars,SOURCE_SHA:sha};
+config.d1_databases[0].database_id=db.uuid;config.d1_databases[0].database_name=databaseName;config.vars={...config.vars,SOURCE_SHA:sha};
 const cli=(args,input)=>{const r=spawnSync('npx',['--no-install','wrangler',...args,'--config','.deploy.json'],{cwd:'panda',env:{...e,WRANGLER_SEND_METRICS:'false'},...(input?{input}:{}),encoding:'utf8',timeout:180000,maxBuffer:8*1024*1024});if(r.status!==0)throw Error('Panda Wrangler '+args[0]+' failed; private output withheld');};
 const save=()=>writeFile('panda/.deploy.json',JSON.stringify(config),{mode:0o600});
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -45,6 +52,18 @@ try{
  await tg('setMyCommands',{commands:[{command:'start',description:'Знакомство и подключение'},{command:'chats',description:'Выбрать чат и режим'},{command:'status',description:'Состояние Панды'},{command:'memory',description:'Что я помню'},{command:'stop',description:'Остановить все автоответы'}]});
  await tg('setWebhook',{url:url+'/telegram',secret_token:hookSecret,allowed_updates:['message','callback_query','business_connection','business_message','edited_business_message','deleted_business_messages','my_chat_member'],max_connections:2,drop_pending_updates:false});
  const hook=await tg('getWebhookInfo');if(hook.url!==url+'/telegram')throw Error('Panda webhook not confirmed');
+ // Only detach the former Panda identity from this exact Worker. Keep its updates.
+ if(e.PREVIOUS_PANDA_BOT_TOKEN&&e.PREVIOUS_PANDA_BOT_TOKEN!==e.PANDA_BOT_TOKEN){
+  try{
+   const previous=async(method,body={})=>(await request('https://api.telegram.org/bot'+e.PREVIOUS_PANDA_BOT_TOKEN+'/'+method,{method:'POST',body})).result;
+   const identity=await previous('getMe');
+   if(String(identity.id)!==e.EXPECTED_PREVIOUS_PANDA_BOT_ID)throw Error('Previous Panda identity guard');
+   const oldHook=await previous('getWebhookInfo');
+   if(oldHook.url===url+'/telegram')await previous('deleteWebhook',{drop_pending_updates:false});
+   const checked=await previous('getWebhookInfo');
+   console.log('PANDA_PREVIOUS '+JSON.stringify({detached_from_this_worker:checked.url!==url+'/telegram'}));
+  }catch{console.log('PANDA_PREVIOUS cleanup_not_confirmed; previous webhook cannot authenticate to the new identity');}
+ }
  // Owner-only /start exercises deployed ingestion, D1, outbox and Telegram.
  const id=-Date.now(),owner=Number(e.OWNER_ID);
  const res=await fetch(url+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':hookSecret},body:JSON.stringify({update_id:id,message:{message_id:id,from:{id:owner},chat:{id:owner,type:'private'},text:'/start'}}),signal:AbortSignal.timeout(10000)});
