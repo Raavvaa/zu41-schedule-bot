@@ -47,7 +47,13 @@ try{
  let health;for(let i=0;i<12;i++){try{health=await request(url+'/health');if(health.version===sha&&health.enabled)break;}catch{}await pause(1500);}
  if(health?.version!==sha||!health.enabled)throw Error('Live Panda version not confirmed');
  console.log('PANDA_STAGE live-model-probe');
- const probe=await request(url+'/ops/probe',{token:adminSecret,method:'POST',body:{}});
+ let probe;
+ // Different edge locations can briefly serve the disabled deployment even
+ // after health sees the activated one. Retry only this transient HTTP state.
+ for(let i=0;i<8;i++){
+  try{probe=await request(url+'/ops/probe',{token:adminSecret,method:'POST',body:{}});break;}
+  catch(error){if(i===7||!error.message.startsWith('Non-JSON response HTTP 503 '))throw error;console.log('PANDA_STAGE waiting-for-activation');await pause(1500);}
+ }
  if(!probe.ok)throw Error('Live Panda model not confirmed');
  if(probe.available===false)console.log('PANDA_MODEL_LIMITED '+JSON.stringify({available:false,reason:probe.reason,failures:probe.failures}));
  await tg('setMyCommands',{commands:[{command:'start',description:'Знакомство и подключение'},{command:'chats',description:'Выбрать чат и режим'},{command:'status',description:'Состояние Панды'},{command:'memory',description:'Что я помню'},{command:'stop',description:'Остановить все автоответы'}]});
