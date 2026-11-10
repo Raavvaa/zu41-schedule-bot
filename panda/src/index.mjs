@@ -1,3 +1,4 @@
+import {background} from './background.mjs';
 import {one,all,run,batch,key,clock,OWNER,getChat,putMessage,queue,stop,maintenance,audit,createProposal,recentReplies,budgets,snapshotChat} from './store.mjs';
 import {ownerTurn,peerTurn,proposalCard} from './agent.mjs';
 import {completion,diagnostic} from './providers.mjs';
@@ -191,7 +192,7 @@ async function handle(env,event,deadline){
   await proposalCard(env,event,event.target,'mode',{mode:'draft',minutes:120,instruction:'Коротко и естественно. Новые обещания и неизвестные факты согласовывать со мной.'});return;
  }
  else if(['memory','память'].includes(slash(event.text))){
-  const facts=await all(env,"SELECT key,value FROM facts WHERE scope='owner' ORDER BY at DESC LIMIT 50");text=facts.length?facts.map(f=>f.key+': '+f.value).join('\n'):'Пока постоянных заметок нет. Напиши «запомни…».';
+  const facts=[...await all(env,"SELECT key,value FROM facts WHERE scope='owner' ORDER BY at DESC LIMIT 50"),...await all(env,"SELECT c.title AS key,f.fact AS value FROM chat_facts f JOIN chats c ON c.id=f.chat_id ORDER BY f.created_at DESC LIMIT 50")];text=facts.length?facts.map(f=>f.key+': '+f.value).join('\n'):'Пока постоянных заметок нет. Напиши «запомни…».';
  }else{
   await putMessage(env,{id:'user:'+event.id,scope:OWNER,role:'user',body:event.text||'[фото]',manual:1});
   text=await ownerTurn(env,event,deadline);
@@ -268,7 +269,7 @@ export default {
   }
   if(url.pathname!=='/telegram'||request.method!=='POST')return new Response('not found',{status:404});
   if(!env.WEBHOOK_SECRET||request.headers.get('x-telegram-bot-api-secret-token')!==env.WEBHOOK_SECRET)return new Response('forbidden',{status:403});
-  try{const raw=await request.text();if(raw.length>120000)return new Response('too large',{status:413});const u=JSON.parse(raw);await acceptUpdate(env,u);ctx.waitUntil(drain(env).catch(()=>{}));return new Response('ok');}catch{return new Response('retry',{status:500});}
+  try{const raw=await request.text();if(raw.length>120000)return new Response('too large',{status:413});const u=JSON.parse(raw);await acceptUpdate(env,u);ctx.waitUntil(drain(env).then(()=>background(env)).catch(()=>{}));return new Response('ok');}catch{return new Response('retry',{status:500});}
  },
- async scheduled(_controller,env,ctx){if(env.ENABLED==='true')ctx.waitUntil(drain(env).catch(()=>{}));}
+ async scheduled(_controller,env,ctx){if(env.ENABLED==='true')ctx.waitUntil(drain(env).then(()=>background(env)).catch(()=>{}));}
 };
