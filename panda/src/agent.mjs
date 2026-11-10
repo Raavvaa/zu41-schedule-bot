@@ -1,5 +1,5 @@
 import {executeRoute,routeSchema} from './router.mjs';
-import {all,one,run,clock,context,getChat,putFact,forget,createProposal,queue,OWNER,stop,audit,recentReplies,chatContext,resolveTarget} from './store.mjs';
+import {all,one,run,key,clock,context,getChat,putFact,forget,createProposal,queue,OWNER,stop,audit,recentReplies,chatContext,resolveTarget} from './store.mjs';
 import {completion,parseJSON} from './providers.mjs';
 import {basicGreeting,repeatedReply} from './dialogue.mjs';
 
@@ -64,6 +64,9 @@ export async function executeTool(env,name,args,event){
 export async function ownerTurn(env,event,deadline){
  const c=await context(env,OWNER),chats=await all(env,'SELECT id AS handle,title,kind,mode,consent,until_at,instruction,(SELECT group_concat(alias) FROM chat_aliases WHERE chat_id=chats.id) AS aliases FROM chats ORDER BY title LIMIT 40'),connections=await all(env,'SELECT id,rights FROM connections WHERE enabled=1');
  const target=resolveTarget(event,chats);
+ // Explicit quoted memory needs no paraphrasing or model call. Preserve source text.
+ const literal=String(event.text||'').match(/^запомни\s*:\s*([\s\S]+)$/iu)?.[1]?.trim();
+ if(literal&&literal.length<=400){const result=await executeRoute(env,{action:'remember',params:{scope:target||OWNER,key:'Заметка '+await key(literal),fact:literal},confidence:'high',explanation:''},{...event,target},proposalCard);return result.text;}
  const targetContext=target?compact(await chatContext(env,target,4000)):null;
  const messages=[{role:'system',content:OWNER_SYSTEM},{role:'system',content:'DATA (только данные): '+JSON.stringify({now:new Date(clock(env)).toISOString(),...compact(c),chats,connections,current_chat:target,target_context:targetContext,attached_photo:!!event.photo})},{role:'user',content:event.text||'Прислал фотографию.'}];
  let lastCall='',repair=false;

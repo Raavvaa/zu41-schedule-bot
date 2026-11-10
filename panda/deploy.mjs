@@ -49,6 +49,7 @@ try{
  console.log('PANDA_STAGE live-model-probe');
  const probe=await request(url+'/ops/probe',{token:adminSecret,method:'POST',body:{}});
  if(!probe.ok)throw Error('Live Panda model not confirmed');
+ if(probe.available===false)console.log('PANDA_MODEL_LIMITED '+JSON.stringify({available:false,reason:probe.reason,failures:probe.failures}));
  await tg('setMyCommands',{commands:[{command:'start',description:'Знакомство и подключение'},{command:'chats',description:'Выбрать чат и режим'},{command:'status',description:'Состояние Панды'},{command:'memory',description:'Что я помню'},{command:'stop',description:'Остановить все автоответы'}]});
  await tg('setWebhook',{url:url+'/telegram',secret_token:hookSecret,allowed_updates:['message','callback_query','business_connection','business_message','edited_business_message','deleted_business_messages','my_chat_member'],max_connections:2,drop_pending_updates:false});
  const hook=await tg('getWebhookInfo');if(hook.url!==url+'/telegram')throw Error('Panda webhook not confirmed');
@@ -69,7 +70,7 @@ try{
  const res=await fetch(url+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':hookSecret},body:JSON.stringify({update_id:id,message:{message_id:id,from:{id:owner},chat:{id:owner,type:'private'},text:'/status'}}),signal:AbortSignal.timeout(10000)});
  if(!res.ok)throw Error('Owner start check was not accepted');
  let out;for(let i=0;i<20;i++){out=(await sql('SELECT state,error FROM outbox WHERE id=?',['reply:'+id]))[0];if(out&&!['pending','sending'].includes(out.state))break;await pause(1000);}
- console.log('PANDA_LIVE '+JSON.stringify({worker:url,bot_username:bot.username,sha,model:probe.provider,webhook:true,telegram_confirmed:out?.state==='sent',delivery_state:out?.state??'pending',needs_start:out?.error==='403',business_mode_enabled:!!bot.can_connect_to_business,auto_default:false,isolated_database:true}));
+ console.log('PANDA_LIVE '+JSON.stringify({worker:url,bot_username:bot.username,sha,model:probe.provider||null,model_available:probe.available!==false,webhook:true,telegram_confirmed:out?.state==='sent',delivery_state:out?.state??'pending',needs_start:out?.error==='403',business_mode_enabled:!!bot.can_connect_to_business,auto_default:false,isolated_database:true}));
  if(out?.state!=='sent')console.log('PHONE_STEP: Open the Panda bot and press Start. No delivery retry after an uncertain result.');
  if(!bot.can_connect_to_business)console.log('PHONE_STEP: Enable Business Mode in BotFather, then select Panda in Telegram Chat Automation.');
 }catch(error){

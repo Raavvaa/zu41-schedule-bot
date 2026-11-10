@@ -1,7 +1,7 @@
 import {background} from './background.mjs';
 import {one,all,run,batch,key,clock,OWNER,getChat,putMessage,queue,stop,maintenance,audit,createProposal,recentReplies,budgets,snapshotChat} from './store.mjs';
 import {ownerTurn,peerTurn,proposalCard} from './agent.mjs';
-import {completion,diagnostic,providerConfig} from './providers.mjs';
+import {completion,diagnostic,providerConfig,ModelUnavailable} from './providers.mjs';
 import {telegram,setAvatar} from './telegram.mjs';
 import {repeatedReply} from './dialogue.mjs';
 
@@ -295,7 +295,12 @@ export default {
   if(env.ENABLED!=='true')return new Response('disabled',{status:503});
   if(url.pathname==='/ops/probe'&&request.method==='POST'){
    if(!env.ADMIN_SECRET||request.headers.get('authorization')!=='Bearer '+env.ADMIN_SECRET)return new Response('forbidden',{status:403});
-   try{const r=await completion(env,[{role:'system',content:'Reply with the single word READY.'},{role:'user',content:'Synthetic deployment check. No personal data.'}]);return Response.json({ok:!!r.message.content,provider:r.provider});}catch{return Response.json({ok:false},{status:503});}
+   try{const r=await completion(env,[{role:'system',content:'Reply with the single word READY.'},{role:'user',content:'Synthetic deployment check. No personal data.'}]);return Response.json({ok:!!r.message.content,available:true,provider:r.provider});}catch(error){
+    // An exhausted daily allowance must not prevent shipping controls/queue fixes.
+    // Live synthetic quality checks still gate deployment; never reset usage here.
+    if(error instanceof ModelUnavailable&&error.failures.some(f=>f.kind==='BUDGET_INTERNAL'))return Response.json({ok:true,available:false,reason:'DAILY_BUDGET_EXHAUSTED',failures:error.failures.map(({provider,kind,status})=>({provider,kind,status}))});
+    return Response.json({ok:false},{status:503});
+   }
   }
   if(url.pathname!=='/telegram'||request.method!=='POST')return new Response('not found',{status:404});
   if(!env.WEBHOOK_SECRET||request.headers.get('x-telegram-bot-api-secret-token')!==env.WEBHOOK_SECRET)return new Response('forbidden',{status:403});

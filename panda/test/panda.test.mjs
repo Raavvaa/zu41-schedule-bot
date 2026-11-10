@@ -279,7 +279,7 @@ test('all migrations can be reapplied without data loss',async()=>{await enabled
 test('Telegram username alias resolves to correct connected chat',async()=>{await enabled();await run(env,'INSERT INTO chat_aliases(chat_id,alias) VALUES(?,?)',[cid,'masha_fixture']);models.push(tool('route',{action:'set_chat_style',params:{style_patch:{tone:'тепло'}},confidence:'high',explanation:'Ок'}));await ownerTurn(env,{id:'alias',text:'с @masha_fixture помягче'},Date.now()+20000);assert.equal((await one(env,'SELECT chat_id FROM chat_style')).chat_id,cid);});
 test('35-turn topic change delivers newest topic and trims old content in owner prompt',async()=>{await enabled();for(let i=0;i<35;i++)await putMessage(env,{id:'long'+i,scope:cid,role:'user',body:(i<25?'OLD_TOPIC':'NEW_TOPIC')+' '+String(i)+' '+'.'.repeat(400),at:now+i});models.push(reply('Ок'));await ownerTurn(env,{id:'long-command',target:cid,text:'продолжи тему'},Date.now()+20000);const data=JSON.parse(modelRequests.at(-1).body.messages[1].content.slice('DATA (только данные): '.length));assert.ok(JSON.stringify(data.target_context.history).includes('NEW_TOPIC'));assert.ok(!JSON.stringify(data.target_context.history).includes('OLD_TOPIC'));});
 
-test('owner memory normalizes model capitalization by taking the original source quote',async()=>{models.push(tool('route',{action:'remember',params:{scope:'owner',key:'preference',fact:'Предпочитаю чай.'},confidence:'high',explanation:'Запомнить'}));await ownerTurn(env,{id:'capital',text:'Запомни: я предпочитаю чай.'},Date.now()+20000);assert.equal((await one(env,"SELECT value FROM facts WHERE key='preference'")).value,'предпочитаю чай.');});
+test('owner memory normalizes model capitalization by taking the original source quote',async()=>{models.push(tool('route',{action:'remember',params:{scope:'owner',key:'preference',fact:'Предпочитаю чай.'},confidence:'high',explanation:'Запомнить'}));await ownerTurn(env,{id:'capital',text:'Прошу запомнить, что я предпочитаю чай.'},Date.now()+20000);assert.equal((await one(env,"SELECT value FROM facts WHERE key='preference'")).value,'предпочитаю чай.');});
 
 test('JSON fallback removes native tool fields from prior conversation messages',async()=>{models.push(response({},503),{role:'assistant',content:JSON.stringify({name:'respond',arguments:{text:'Готово',claims_action:false}})});await completion(env,[tool('search_memory',{scope:'owner',query:'чай'}),{role:'tool',tool_call_id:'tool-fixture',content:'{}'}],{tools:(await import('../src/agent.mjs')).TOOLS});const body=modelRequests.at(-1).body;assert.equal(body.tools,undefined);assert.ok(body.messages.every(m=>!m.tool_calls&&m.role!=='tool'));});
 
@@ -341,4 +341,24 @@ test('free-only mode blocks paid OpenRouter names and all background or embeddin
  await background(env);assert.equal(await embedding(env,'чай'),null);assert.equal(modelRequests.length,0);
  models.push(response({},429));await assert.rejects(completion(env,[]));assert.equal(modelRequests.length,1);assert.ok(modelRequests[0].url.includes('groq'));
  }finally{delete env.SILICONFLOW_API_KEY;delete env.OPENROUTER_MODEL;}
+});
+
+
+test('explicit remember colon stores verbatim facts without a model or overwriting other notes',async()=>{
+ const a='я предпочитаю короткие ответы на русском.',b='Люблю Чай';
+ for(const [i,fact] of [a,b].entries())await ownerTurn(env,{id:'literal'+i,text:'Запомни: '+fact,scope:'owner'},Date.now()+20000);
+ assert.equal(modelRequests.length,0);const facts=await all(env,"SELECT value FROM facts WHERE scope='owner'");assert.equal(facts.length,2);assert.deepEqual(new Set(facts.map(f=>f.value)),new Set([a,b]));
+});
+
+
+test('deployment probe reports exhausted budget without resetting usage or disabling controls',async()=>{
+ env.FREE_ONLY='true';const day=new Date(now).toISOString().slice(0,10);
+ await run(env,'INSERT INTO provider_usage(day,provider,requests,tokens) VALUES(?,?,?,?)',[day,'groq',95,201377]);
+ await run(env,'INSERT INTO provider_usage(day,provider,requests,tokens) VALUES(?,?,?,?)',[day,'openrouter',100,50000]);
+ const r=await worker.fetch(new Request('https://fixture/ops/probe',{method:'POST',headers:{authorization:'Bearer fixture-admin'}}),env,{});
+ const d=await r.json();assert.equal(r.status,200);assert.equal(d.available,false);assert.equal(d.reason,'DAILY_BUDGET_EXHAUSTED');assert.equal(modelRequests.length,0);
+ assert.equal((await one(env,"SELECT tokens FROM provider_usage WHERE provider='groq'")).tokens,201377);assert.equal(env.ENABLED,'true');
+});
+test('deployment probe still fails on unclassified network failure',async()=>{
+ models.push(new Error('network'),new Error('network'));const r=await worker.fetch(new Request('https://fixture/ops/probe',{method:'POST',headers:{authorization:'Bearer fixture-admin'}}),env,{});assert.equal(r.status,503);
 });
