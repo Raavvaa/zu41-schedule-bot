@@ -136,3 +136,5 @@ Workers AI → Groq → OpenRouter Free. Binding `AI`, без нового API-�
 https://developers.cloudflare.com/workers-ai/platform/pricing/
 
 Таймаут binding ограничивает ожидание ответа; уже запущенная инференс-задача может продолжить расход квоты. Фоновые SiliconFlow-задачи в FREE_ONLY по-прежнему выключены.
+
+Workers AI: ответы `response` как объект сериализуются в JSON; поддерживаются и ответы `choices`. Для Workers AI/OpenRouter JSON задаётся инструкцией, без необязательного `response_format`; результат проверяется локально до использования. Ошибки binding показывают безопасный код Cloudflare, неизвестные ошибки не выдаются за HTTP 503.

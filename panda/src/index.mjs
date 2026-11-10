@@ -298,6 +298,7 @@ export default {
    try{const only=url.searchParams.get('provider')==='cloudflare'?'cloudflare':undefined;const started=Date.now();const r=await completion(env,[{role:'system',content:'Return JSON only: {\"ready\":true}'},{role:'user',content:'Synthetic deployment check. No personal data.'}],{json:true,only});return Response.json({ok:only?parseJSON(r.message.content)?.ready===true:!!r.message.content,available:true,provider:r.provider,latency_ms:Date.now()-started});}catch(error){
     // An exhausted daily allowance must not prevent shipping controls/queue fixes.
     // Live synthetic quality checks still gate deployment; never reset usage here.
+    if(url.searchParams.get('provider')==='cloudflare'&&error instanceof ModelUnavailable)return Response.json({ok:true,available:false,failures:error.failures});
     if(error instanceof ModelUnavailable&&error.failures.some(f=>f.kind==='BUDGET_INTERNAL'))return Response.json({ok:true,available:false,reason:'DAILY_BUDGET_EXHAUSTED',failures:error.failures.map(({provider,kind,status})=>({provider,kind,status}))});
     return Response.json({ok:false},{status:503});
    }
