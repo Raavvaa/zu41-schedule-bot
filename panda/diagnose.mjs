@@ -17,6 +17,13 @@ const sql=async(statement,params=[])=>{if(!/^SELECT\s/i.test(statement))throw Er
 const connections=await sql('SELECT id,enabled,rights FROM connections');
 const state={connections:connections.length,chats:await sql('SELECT kind,mode,count(*) AS n FROM chats GROUP BY kind,mode'),inbox:await sql('SELECT state,count(*) AS n FROM inbox GROUP BY state'),outbox:await sql('SELECT state,error,count(*) AS n FROM outbox GROUP BY state,error'),audit:await sql('SELECT kind,count(*) AS n FROM audit GROUP BY kind')};
 console.log('PANDA_DIAG_STATE '+JSON.stringify(state));
+const now=Date.now(),day=new Date(now).toISOString().slice(0,10);
+console.log('PANDA_DIAG_GATES '+JSON.stringify({
+ settings:await sql('SELECT paused,CASE WHEN lock_until>? THEN 1 ELSE 0 END AS busy FROM settings WHERE id=1',[now]),
+ chats:await sql("SELECT mode,consent,CASE WHEN until_at>? THEN 1 ELSE 0 END AS active,CASE WHEN pause_until>? THEN 1 ELSE 0 END AS manual_pause,CASE WHEN last_incoming>? THEN 1 ELSE 0 END AS reply_window,count(*) AS n FROM chats GROUP BY mode,consent,active,manual_pause,reply_window",[now,now,now-86400000]),
+ usage:await sql('SELECT requests,tokens FROM usage WHERE day=?',[day]),
+ recent_events:await sql('SELECT kind,count(*) AS n FROM audit WHERE at>? GROUP BY kind',[now-30*60000])
+}));
 const since=Date.now()-2*3600000;
 console.log('PANDA_DIAG_DIALOGUE '+JSON.stringify({
  deliveries:await sql("SELECT mode,state,count(*) AS n,sum(CASE WHEN json_extract(payload,'$.text')='Привет!' THEN 1 ELSE 0 END) AS repeated_greeting FROM outbox WHERE scope<>'owner' AND at>? GROUP BY mode,state",[since]),
