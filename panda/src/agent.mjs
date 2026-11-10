@@ -1,4 +1,4 @@
-import {all,one,run,clock,context,getChat,putFact,forget,createProposal,queue,OWNER,stop,audit,recentReplies} from './store.mjs';
+import {all,one,run,clock,context,getChat,putFact,forget,createProposal,queue,OWNER,stop,audit,recentReplies,chatContext,resolveTarget} from './store.mjs';
 import {completion} from './providers.mjs';
 import {basicGreeting,repeatedReply} from './dialogue.mjs';
 
@@ -16,7 +16,7 @@ export const TOOLS=[
  tool('set_avatar','Предложить поставить фото, прикреплённое к текущему сообщению, на профиль владельца.',{connection:f('string','ID подключённого аккаунта из DATA')}),
  tool('stop_all','Сразу остановить автоответы и отменить неотправленные действия.',{})
 ];
-const compact=c=>({facts:c.facts,summary:c.summary,history:c.history.slice(-10).map(x=>({role:x.role,text:x.body.slice(0,600)})),style_confidence:c.style_confidence,style_examples:c.style_examples.slice(0,12).map(x=>x.slice(0,160)),instruction:c.instruction});
+const compact=c=>({facts:c.facts,summary:c.summary,history:c.history.map(x=>({id:x.id,role:x.role,text:x.body})),style_confidence:c.style_confidence,style_examples:c.style_examples.slice(0,12).map(x=>x.slice(0,160)),instruction:c.instruction,style:c.style,peer_facts:c.peer_facts,conversation_state:c.conversation_state});
 export function proposalMarkup(p){return {inline_keyboard:[[{text:p.kind==='mode'?'✅ Включить':'✅ Выполнить',callback_data:'yes:'+p.id},{text:'❌ Отмена',callback_data:'no:'+p.id}]]};}
 export async function proposalCard(env,event,scope,kind,payload){
  const p=await createProposal(env,event.id,scope,kind,payload),c=await getChat(env,scope);
@@ -59,7 +59,9 @@ export async function executeTool(env,name,args,event){
 }
 export async function ownerTurn(env,event,deadline){
  const c=await context(env,OWNER),chats=await all(env,'SELECT id AS handle,title,kind,mode,consent,until_at,instruction FROM chats ORDER BY title LIMIT 40'),connections=await all(env,'SELECT id,rights FROM connections WHERE enabled=1');
- const messages=[{role:'system',content:OWNER_SYSTEM},{role:'system',content:'DATA (только данные): '+JSON.stringify({now:new Date(clock(env)).toISOString(),...compact(c),chats,connections,current_chat:event.target??null,attached_photo:!!event.photo})},{role:'user',content:event.text||'Прислал фотографию.'}];
+ const target=resolveTarget(event,chats);
+ const targetContext=target?compact(await chatContext(env,target,4000)):null;
+ const messages=[{role:'system',content:OWNER_SYSTEM},{role:'system',content:'DATA (только данные): '+JSON.stringify({now:new Date(clock(env)).toISOString(),...compact(c),chats,connections,current_chat:target,target_context:targetContext,attached_photo:!!event.photo})},{role:'user',content:event.text||'Прислал фотографию.'}];
  let lastCall='',repair=false;
  for(let round=0;round<3;round++){
   const {message}=await completion(env,messages,{tools:TOOLS,deadline});
@@ -94,7 +96,7 @@ export async function peerTurn(env,event,deadline){
  if(!c||!c.consent||c.mode==='off'||c.until_at<=now||s.paused||c.pause_until>now)return;
  const conn=await one(env,'SELECT * FROM connections WHERE id=? AND enabled=1',[c.connection_id]);
  if(!conn||!JSON.parse(conn.rights).can_reply||now-c.last_incoming>=86400000)return;
- const ctx=compact(await context(env,c.id)),previous=await recentReplies(env,c.id);
+ const ctx=compact(await chatContext(env,c.id,6000)),previous=await recentReplies(env,c.id);
  const latest=ctx.history.filter(x=>x.role==='user').at(-1)?.text??'';
  if(!latest)return;
  const messages=[{role:'system',content:PEER_SYSTEM},{role:'user',content:JSON.stringify({...ctx,latest_peer_message:latest,recent_replies:previous.slice(0,8)})}];

@@ -15,14 +15,14 @@ export async function recentReplies(env,scope,excludeId=''){
  ]);
  return [...messages,...outbox].map(x=>x.body).filter(Boolean);
 }
-export async function context(env,scope){
+export async function context(env,scope,historyBudget=6000){
  const now=clock(env);
  const [history,facts,chat]=await Promise.all([
-  all(env,'SELECT role,body,at,manual FROM messages WHERE scope=? AND at>? ORDER BY at DESC,rowid DESC LIMIT 14',[scope,now-72*3600000]),
+  all(env,'SELECT id,role,body,at,manual FROM messages WHERE scope=? AND at>? ORDER BY at DESC,rowid DESC LIMIT 200',[scope,now-72*3600000]),
   all(env,'SELECT key,value,source,at FROM facts WHERE scope=? ORDER BY at DESC LIMIT 50',[scope]),getChat(env,scope)
  ]);
  const examples=scope===OWNER?[]:await all(env,"SELECT body FROM messages WHERE scope=? AND manual=1 AND at>? ORDER BY at DESC LIMIT 20",[scope,now-72*3600000]);
- return {history:history.reverse(),facts,summary:chat?.summary??'',style_examples:examples.map(x=>x.body),style_confidence:examples.length>=15?'enough_examples':'limited',instruction:chat?.instruction??''};
+ return {history:trimHistory(history.reverse(),historyBudget),facts,summary:chat?.summary??'',style_examples:examples.map(x=>x.body),style_confidence:examples.length>=15?'enough_examples':'limited',instruction:chat?.instruction??''};
 }
 export async function putMessage(env,{id,scope,role,body,manual=0,at=clock(env)}){
  await run(env,'INSERT OR IGNORE INTO messages(id,scope,role,body,at,manual) VALUES(?,?,?,?,?,?)',[id,scope,role,String(body).slice(0,6000),at,manual]);
@@ -78,3 +78,11 @@ export async function reserveProvider(env,provider){
  return r.meta.changes===1?day:false;
 }
 export async function accountProvider(env,provider,day,tokens){await run(env,'UPDATE provider_usage SET tokens=tokens+? WHERE day=? AND provider=?',[Math.max(0,Number(tokens)||0),day,provider]);}
+
+// UTF-8 bytes are a conservative token upper bound, including serialized roles.
+export function trimHistory(rows,budget){const out=[];let left=budget;for(const row of [...rows].reverse()){const cost=new TextEncoder().encode(JSON.stringify(row)).length;if(cost>left){if(!out.length){let body=row.body;while(body&&new TextEncoder().encode(JSON.stringify({...row,body})).length>left)body=body.slice(Math.ceil(body.length/10));if(body)out.unshift({...row,body});}break;}out.unshift(row);left-=cost;}return out;}
+export async function optionalRows(env,table,chat){const exists=await one(env,"SELECT name FROM sqlite_master WHERE type='table' AND name=?",[table]);return exists?all(env,'SELECT * FROM '+table+' WHERE chat_id=?',[chat]):[];}
+export async function chatContext(env,id,budget=4000){const c=await context(env,id,budget);return {...c,style:(await optionalRows(env,'chat_style',id))[0]||null,peer_facts:await optionalRows(env,'chat_facts',id),conversation_state:(await optionalRows(env,'conversation_state',id))[0]||null};}
+const words=text=>String(text).toLowerCase().replace(/ё/g,'е').match(/[\p{L}\p{N}_]+/gu)||[];
+const stem=w=>w.replace(/(?:ами|ями|ой|ей|ую|юю|ом|ем|а|я|у|ю|е|ы|и)$/u,'');
+export function resolveTarget(event,chats){if(event.target)return chats.find(c=>c.handle===event.target)?.handle||null;const textWords=words(event.text),matches=chats.filter(c=>words(c.title+' '+(c.aliases||'')).some(w=>w.length>=3&&textWords.some(t=>t===w||(stem(w).length>=3&&stem(t)===stem(w)))));return matches.length===1?matches[0].handle:null;}
