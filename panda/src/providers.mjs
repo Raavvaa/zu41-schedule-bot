@@ -18,14 +18,14 @@ export async function completion(env,messages,{tools,json=false,deadline=Date.no
   if(Date.now()>deadline-100){failures.push({kind:'NETWORK_TIMEOUT',provider:p.name});continue;}
   let input=messages,body={model:p.model,messages:input,temperature:0.35,...(p.name==='groq'?{max_completion_tokens:850,reasoning_effort:'low'}:{max_tokens:850})};
   if(tools&&p.name==='groq')Object.assign(body,{tools,tool_choice:'required',parallel_tool_calls:false});
-  else if(tools){body.messages=[{role:'system',content:'Return JSON only: {"name":tool name,"arguments":object}. Tool schemas: '+JSON.stringify(tools)},...messages.map(m=>m.role==='tool'?{role:'user',content:'Tool result: '+m.content}:m)];body.response_format={type:'json_object'};}
+  else if(tools){body.messages=[{role:'system',content:'For owner routing return JSON {"action":string,"params":object,"confidence":"high|medium|low","explanation":string}. Otherwise return {"name":tool name,"arguments":object}. Tool schemas: '+JSON.stringify(tools)},...messages.map(m=>m.role==='tool'?{role:'user',content:'Tool result: '+m.content}:m)];body.response_format={type:'json_object'};}
   if(json)body.response_format={type:'json_object'};
   let response,data;
   try{response=await (env.FETCH||fetch)(p.base+'/chat/completions',{method:'POST',headers:{Authorization:'Bearer '+p.key,'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(Math.max(1,Math.min(p.name==='groq'?4000:6000,deadline-Date.now())))});const raw=await response.text();data=parseJSON(raw)||{};}catch{failures.push({kind:'NETWORK_TIMEOUT',provider:p.name});await audit(env,'NETWORK_TIMEOUT_'+p.name);continue;}
   if(!response.ok){const retry=Number(response.headers.get('retry-after'))||60;const f={kind:response.status===429?'PROVIDER_RATE_LIMIT':'PROVIDER_HTTP_ERROR',provider:p.name,status:response.status,body:safeErrorBody(data),...(response.status===429?{retry_after:retry}:{})};failures.push(f);await run(env,'INSERT INTO providers(name,blocked_until,kind) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET blocked_until=excluded.blocked_until,kind=excluded.kind',[p.name,now+(response.status===429?Math.min(retry,86400):5)*1000,String(response.status)]);await audit(env,f.kind+'_'+p.name+'_'+response.status);continue;}
   const n=Number(data.usage?.total_tokens)||new TextEncoder().encode(JSON.stringify(body)).length+850;await accountProvider(env,p.name,day,n);
   let message=data.choices?.[0]?.message;
-  if(tools&&p.name!=='groq'&&message?.content){const x=parseJSON(message.content);if(x&&tools.some(t=>t.function.name===x.name)&&x.arguments&&typeof x.arguments==='object')message={role:'assistant',tool_calls:[{id:'json-tool',type:'function',function:{name:x.name,arguments:JSON.stringify(x.arguments)}}]};}
+  if(tools&&p.name!=='groq'&&message?.content){let x=parseJSON(message.content);if(x?.action)x={name:'route',arguments:x};if(x&&tools.some(t=>t.function.name===x.name)&&x.arguments&&typeof x.arguments==='object')message={role:'assistant',tool_calls:[{id:'json-tool',type:'function',function:{name:x.name,arguments:JSON.stringify(x.arguments)}}]};}
   if(!message||(!message.content&&!message.tool_calls?.length)){failures.push({kind:'PROVIDER_HTTP_ERROR',provider:p.name,status:200,body:'invalid response'});continue;}
   return {message,provider:p.name,tokens:n};
  }
