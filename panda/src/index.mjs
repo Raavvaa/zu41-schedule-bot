@@ -1,6 +1,6 @@
 import {background} from './background.mjs';
 import {one,all,run,batch,key,clock,OWNER,getChat,putMessage,queue,stop,maintenance,audit,createProposal,recentReplies,budgets,snapshotChat} from './store.mjs';
-import {ownerTurn,peerTurn,proposalCard} from './agent.mjs';
+import {ownerTurn,peerTurn,proposalCard,PEER_SYSTEM,parsePeer} from './agent.mjs';
 import {completion,diagnostic,providerConfig,ModelUnavailable,parseJSON} from './providers.mjs';
 import {telegram,setAvatar} from './telegram.mjs';
 import {repeatedReply} from './dialogue.mjs';
@@ -295,7 +295,8 @@ export default {
   if(env.ENABLED!=='true')return new Response('disabled',{status:503});
   if(url.pathname==='/ops/probe'&&request.method==='POST'){
    if(!env.ADMIN_SECRET||request.headers.get('authorization')!=='Bearer '+env.ADMIN_SECRET)return new Response('forbidden',{status:403});
-   try{const only=url.searchParams.get('provider')==='cloudflare'?'cloudflare':undefined;const started=Date.now();const r=await completion(env,[{role:'system',content:'Return JSON only: {\"ready\":true}'},{role:'user',content:'Synthetic deployment check. No personal data.'}],{json:true,only});return Response.json({ok:only?parseJSON(r.message.content)?.ready===true:!!r.message.content,available:true,provider:r.provider,latency_ms:Date.now()-started});}catch(error){
+   try{const only=url.searchParams.get('provider')==='cloudflare'?'cloudflare':undefined;const started=Date.now();const r=await completion(env,[{role:'system',content:'Return JSON only: {\"ready\":true}'},{role:'user',content:'Synthetic deployment check. No personal data.'}],{json:true,only});let checks;if(only){const peer=await completion(env,[{role:'system',content:PEER_SYSTEM},{role:'user',content:JSON.stringify({history:[{role:'user',body:'Привет! Как дела?'}],facts:[],instruction:'Короткий тёплый ответ без выдуманных личных фактов.'})}],{json:true,only});const parsed=parsePeer(peer.message.content);const routed=await completion(env,[{role:'system',content:'Route the owner request. Return action=set_chat_style, params={style_patch:{tone:string,instructions:string}}, confidence=high, explanation:string.'},{role:'user',content:'Панда, общайся в этом чате мягко и без официоза.'}],{only,tools:[{type:'function',function:{name:'route',parameters:{type:'object'}}}]});const call=routed.message.tool_calls?.[0];const action=parseJSON(call?.function?.arguments);checks={peer_json:!!parsed,peer_reply:!!parsed?.reply,style_route:action?.action==='set_chat_style'};}
+return Response.json({ok:true,available:checks?Object.values(checks).every(Boolean):true,checks,provider:r.provider,structured_object:typeof parseJSON(r.message.content)==='object'&&parseJSON(r.message.content)!==null,ready:parseJSON(r.message.content)?.ready===true,latency_ms:Date.now()-started});}catch(error){
     // An exhausted daily allowance must not prevent shipping controls/queue fixes.
     // Live synthetic quality checks still gate deployment; never reset usage here.
     if(url.searchParams.get('provider')==='cloudflare'&&error instanceof ModelUnavailable)return Response.json({ok:true,available:false,failures:error.failures});
