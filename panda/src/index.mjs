@@ -7,6 +7,7 @@ import {repeatedReply} from './dialogue.mjs';
 export const prefix=text=>/^панда(?:[\s,!:]|$)/iu.test(text);
 const strip=text=>text.replace(/^панда[\s,!:]*/iu,'').trim();
 const helpHere=text=>/^(?:помогай|помоги|работай|включись)\s+здесь[.!\s]*$/iu.test(text.trim());
+export const autoHere=text=>/^(?:отвечай(?:\s+на\s+все\s+сообщения)?|(?:включи|возобнови)\s+автоответы?|продолжай\s+отвечать)(?:\s+(?:здесь|в\s+этом\s+чате|этого\s+чата))?[.!\s]*$/iu.test(text.trim());
 const slash=text=>text.trim().match(/^\/([\p{L}\w]+)(?:@\w+)?(?:\s+([\s\S]*))?$/u)?.[1]?.toLowerCase();
 export const stopCommand=text=>/^(?:\/stop(?:@\w+)?|стоп|остановись|останови всё|останови все|выключись)[.!\s]*$/iu.test(text.trim());
 const startText='Я Панда 🐼 Можно просто поговорить, попросить запомнить важное или поручить дело.\n\nЧтобы я помогала в твоих личных чатах: включи Secretary/Business Mode у этого бота в @BotFather → Bot Settings, затем Telegram → Настройки → Изменить → Автоматизация чатов → выбери меня и нужные чаты. После подключения напиши в нужном чате «панда, помогай здесь» или открой /chats.\n\nСначала покажу черновики тебе. Автоответ включается отдельно и на время. «панда, стоп» или /stop останавливает ответы. Голосовые не обрабатываю.\n/status — состояние, /memory — память, /chats — подключённые чаты.';
@@ -19,6 +20,18 @@ async function chatButtons(env,eventId){
 async function status(env,eventId){
  const now=clock(env),day=new Date(now).toISOString().slice(0,10),[chats,usage,uncertain,s,connections]=await Promise.all([all(env,'SELECT title,mode,until_at FROM chats'),one(env,'SELECT * FROM usage WHERE day=?',[day]),one(env,"SELECT count(*) AS n FROM outbox WHERE state='unknown'"),one(env,'SELECT paused FROM settings WHERE id=1'),one(env,'SELECT count(*) AS n FROM connections WHERE enabled=1')]);
  await queue(env,'reply:'+eventId,`Панда работает. ${s.paused?'Автоответы остановлены.':''}\n${connections.n?'Профиль подключён.':'Сервер ещё не получил подключение профиля.'}\n${chats.map(c=>`${c.title}: ${c.mode==='off'||c.until_at<=now?'выключено':c.mode==='auto'?'автоответ':'черновики'}`).join('\n')||'Сообщения выбранных чатов пока не поступили.'}\nОбращений к моделям сегодня: ${usage?.requests??0}/${env.DAILY_REQUEST_LIMIT||120}.\nОтправок с неизвестным результатом: ${uncertain.n}.`);
+}
+async function enableAutoHere(env,scope){
+ const c=await getChat(env,scope);
+ const conn=c?.kind==='private'?await one(env,'SELECT * FROM connections WHERE id=? AND enabled=1',[c.connection_id]):null;
+ if(!conn||!JSON.parse(conn.rights).can_reply)return 'В настройках подключения нужно разрешить ответы.';
+ await batch(env,[
+  ['UPDATE settings SET paused=0 WHERE id=1'],
+  ["UPDATE chats SET mode='auto',consent=1,until_at=?,pause_until=0,revision=revision+1 WHERE id=?",[clock(env)+120*60000,c.id]],
+  ["UPDATE proposals SET status='cancelled' WHERE scope=? AND kind='mode' AND status='pending'",[c.id]]
+ ]);
+ await audit(env,'owner_auto_enabled');
+ return `В чате «${c.title}» включены автоответы на 2 часа. На новые текстовые сообщения отвечу автоматически. Твои сообщения больше не ставят чат на паузу. Остановить: «панда, стоп».`;
 }
 async function resolveConnection(env,id){
  if(typeof id!=='string'||!id)return null;
@@ -75,14 +88,18 @@ export async function acceptUpdate(env,u){
   await run(env,'INSERT INTO chats(id,connection_id,telegram_id,title) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title',[scope,m.business_connection_id,String(m.chat.id),[m.chat.first_name,m.chat.last_name].filter(Boolean).join(' ')||m.chat.username||'Личный чат']);
   if(isOwner&&prefix(text)&&!u.edited_business_message){
    const command=strip(text);if(stopCommand(command))await stop(env,scope);
-   event={id,scope:OWNER,type:'owner',text:command,target:scope};
+   // Explicit local activation is applied at ingestion, just like stop. The
+   // queued receipt must never reactivate the chat after a later stop command.
+   event=autoHere(command)?{id,scope:OWNER,type:'notice',text:await enableAutoHere(env,scope),target:scope}:{id,scope:OWNER,type:'owner',text:command,target:scope};
   }else{
    const c=await getChat(env,scope);
    const messageId=scope+':'+m.message_id;
    if(!u.edited_business_message&&await one(env,'SELECT id FROM messages WHERE id=?',[messageId]))return;
    // No third-party text retained or sent to LLM before per-chat opt-in.
-   if(isOwner)await run(env,'UPDATE chats SET last_manual=?,pause_until=?,revision=revision+1 WHERE id=?',[now,now+600000,scope]);
-   else await run(env,'UPDATE chats SET last_incoming=?,revision=revision+1 WHERE id=?',[now,scope]);
+   // Manual replies invalidate work already being generated, but do not mute
+   // future incoming turns. Clear legacy ten-minute pauses on either new turn.
+   if(isOwner)await run(env,'UPDATE chats SET last_manual=?,pause_until=0,revision=revision+1 WHERE id=?',[now,scope]);
+   else await run(env,'UPDATE chats SET last_incoming=?,pause_until=0,revision=revision+1 WHERE id=?',[now,scope]);
    if(!c.consent||c.mode==='off'||c.until_at<=now)return;
    if(!text||m.voice||m.audio||m.video_note){if(!isOwner)await queue(env,'media:'+id,'В чате «'+c.title+'» пришло сообщение без текста. Я его не анализировала.');return;}
    if(u.edited_business_message)await run(env,'DELETE FROM messages WHERE id=?',[messageId]);
@@ -159,12 +176,14 @@ async function handle(env,event,deadline){
  if(event.type==='callback')return callback(env,event);
  if(event.type==='peer')return peerTurn(env,event,deadline);
  let text;
- if(event.type==='import')text=await importHistory(env,event);
+ if(event.type==='notice')text=event.text;
+ else if(event.type==='import')text=await importHistory(env,event);
  else if(stopCommand(event.text))text='Остановила автоответы. Неотправленные предложения отменены.';
  else if(/^\/(start|help)(?:\s|$)/i.test(event.text))text=startText;
  else if(event.text==='/no_voice')text='Голос пока не разбираю. Напиши текстом — помогу.';
  else if(['chats','чаты'].includes(slash(event.text)))return chatButtons(env,event.id);
  else if(['status','статус'].includes(slash(event.text)))return status(env,event.id);
+ else if(autoHere(event.text))return chatButtons(env,event.id);
  else if(helpHere(event.text)){
   if(!event.target)return chatButtons(env,event.id);
   await proposalCard(env,event,event.target,'mode',{mode:'draft',minutes:120,instruction:'Коротко и естественно. Новые обещания и неизвестные факты согласовывать со мной.'});return;

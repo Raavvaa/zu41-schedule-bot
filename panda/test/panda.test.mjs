@@ -2,7 +2,7 @@ import test,{before,after,beforeEach} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {Miniflare} from 'miniflare';
-import worker,{acceptUpdate,drain,flush,canSend,prefix,stopCommand} from '../src/index.mjs';
+import worker,{acceptUpdate,drain,flush,canSend,prefix,stopCommand,autoHere} from '../src/index.mjs';
 import {one,all,run,context,putFact,putMessage,createProposal,queue,stop,maintenance,key} from '../src/store.mjs';
 import {ownerTurn,peerTurn,parsePeer} from '../src/agent.mjs';
 import {completion} from '../src/providers.mjs';
@@ -103,7 +103,69 @@ test('ordinary conversation is preserved without financial templates',async()=>{
 test('owner tool sees current business chat for here command',async()=>{await connect();models.push(tool('set_chat_mode',{chat:cid,mode:'draft',minutes:120,instruction:'Коротко'}));await acceptUpdate(env,business('панда, отвечай здесь коротко 30 минут',owner));await drain(env);assert.equal((await one(env,'SELECT kind FROM proposals')).kind,'mode');assert.equal(JSON.parse(modelRequests[0].body.messages[1].content.slice('DATA (только данные): '.length)).current_chat,cid);assert.equal((await one(env,'SELECT mode FROM chats')).mode,'off');});
 test('peer saying panda stop is never an owner command',async()=>{await enabled();models.push(peerReply('Сообщение владельцу передам.',true));await acceptUpdate(env,business('панда, стоп'));await drain(env);assert.equal((await one(env,'SELECT mode FROM chats')).mode,'draft');});
 test('owner stop is immediate even while processing lock held',async()=>{await enabled('auto');await run(env,'UPDATE settings SET lock_until=?',[now+60000]);await acceptUpdate(env,business('панда, стоп',owner));assert.equal((await one(env,'SELECT mode FROM chats')).mode,'off');assert.equal(modelRequests.length,0);});
-test('manual owner reply pauses auto and remains a style example',async()=>{await enabled('auto');await acceptUpdate(env,business('Привет, я сам отвечу',owner));assert.ok((await one(env,'SELECT pause_until FROM chats')).pause_until>now);assert.equal((await context(env,cid)).style_examples.length,1);});
+test('manual owner reply preserves style and allows the next incoming auto turn',async()=>{
+ await enabled('auto');await acceptUpdate(env,business('Привет, я сам отвечу',owner));
+ assert.equal((await one(env,'SELECT pause_until FROM chats')).pause_until,0);
+ assert.equal((await context(env,cid)).style_examples.length,1);
+ models.push(peerReply('Что именно не работает?'));await acceptUpdate(env,business('Она не ало'));await drain(env);
+ assert.deepEqual(sent.filter(x=>String(x.body.chat_id)===peer).map(x=>x.body.text),['Что именно не работает?']);
+});
+test('explicit current-chat auto command enables immediately without a model or approval card',async()=>{
+ const u=business('панда, отвечай на все сообщения этого чата',owner);
+ await acceptUpdate(env,u);await drain(env);await acceptUpdate(env,u);await drain(env);
+ const c=await one(env,'SELECT * FROM chats');assert.equal(c.mode,'auto');assert.equal(c.consent,1);assert.equal(c.until_at,now+7200000);
+ assert.equal(modelRequests.length,0);assert.equal((await all(env,'SELECT * FROM proposals')).length,0);
+ assert.ok(sent.some(x=>String(x.body.chat_id)===owner&&x.body.text?.includes('включены автоответы')));
+ assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,0);
+ await acceptUpdate(env,business('напиши че нибудь',owner));
+ models.push(peerReply('Привет!'));await acceptUpdate(env,business('Привет'));await drain(env);
+ assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,1);
+});
+test('auto command parsing excludes quoted, negated and broader instructions',()=>{
+ for(const text of ['отвечай на все сообщения этого чата','отвечай здесь','включи автоответ','возобнови автоответы','продолжай отвечать в этом чате'])assert.ok(autoHere(text));
+ for(const text of ['не отвечай здесь','он сказал отвечай здесь','отвечай на все сообщения всех чатов','отвечай здесь только завтра','отвечай на все сообщения этого чата?'])assert.ok(!autoHere(text));
+});
+test('auto command in control DM cannot select or enable a peer implicitly',async()=>{
+ await connect();await drain(env);sent=[];await acceptUpdate(env,privateUpdate('панда, отвечай на все сообщения этого чата'));await drain(env);
+ assert.equal((await one(env,'SELECT mode FROM chats')).mode,'off');assert.equal(modelRequests.length,0);
+ assert.ok(sent.some(x=>x.body.reply_markup?.inline_keyboard[0][0].callback_data==='chat:'+cid));
+});
+test('peer cannot use direct auto command to opt in',async()=>{
+ await connect();await acceptUpdate(env,business('панда, отвечай на все сообщения этого чата'));await drain(env);
+ assert.equal((await one(env,'SELECT mode,consent FROM chats')).consent,0);assert.equal(modelRequests.length,0);
+});
+test('fresh incoming turn clears a legacy manual pause without enabling an off chat',async()=>{
+ await enabled('auto');await run(env,'UPDATE chats SET pause_until=?',[now+600000]);
+ models.push(peerReply('Давай разберёмся'));await acceptUpdate(env,business('Ты работаешь?'));await drain(env);
+ assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,1);
+ await stop(env,cid);await acceptUpdate(env,business('А сейчас?'));await drain(env);
+ assert.equal((await one(env,'SELECT mode FROM chats')).mode,'off');assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,1);
+});
+test('explicit resume cancels stale mode proposal and stays scoped to its chat',async()=>{
+ await enabled('auto');const old=await createProposal(env,'old-mode',cid,'mode',{mode:'draft',minutes:30,instruction:''});
+ await run(env,"INSERT INTO chats(id,telegram_id,title,mode) VALUES('other','303','Other','off')");
+ await run(env,'UPDATE settings SET paused=1');await run(env,'UPDATE chats SET pause_until=? WHERE id=?',[now+600000,cid]);
+ await acceptUpdate(env,business('панда возобнови автоответы',owner));await drain(env);await acceptUpdate(env,click('yes:'+old.id));await drain(env);
+ assert.equal((await one(env,'SELECT paused FROM settings')).paused,0);assert.equal((await one(env,'SELECT mode FROM chats WHERE id=?',[cid])).mode,'auto');
+ assert.equal((await one(env,"SELECT mode FROM chats WHERE id='other'")).mode,'off');assert.equal((await one(env,'SELECT status FROM proposals WHERE id=?',[old.id])).status,'cancelled');
+});
+test('direct auto command respects missing reply rights',async()=>{
+ await connect();await run(env,'UPDATE connections SET rights=?',[JSON.stringify({can_reply:false})]);
+ await acceptUpdate(env,business('панда отвечай здесь',owner));await drain(env);
+ assert.equal((await one(env,'SELECT mode FROM chats')).mode,'off');assert.ok(sent.some(x=>x.body.text?.includes('разрешить ответы')));assert.equal(modelRequests.length,0);
+});
+test('activation accepts immediately during a busy turn and a subsequent stop wins',async()=>{
+ await connect();await run(env,'UPDATE settings SET lock_until=?',[now+60000]);
+ await acceptUpdate(env,business('панда отвечай здесь',owner));
+ assert.equal((await one(env,'SELECT mode FROM chats')).mode,'auto');
+ await acceptUpdate(env,business('панда стоп',owner));await run(env,'UPDATE settings SET lock_until=0');await drain(env);
+ assert.equal((await one(env,'SELECT mode FROM chats')).mode,'off');assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,0);
+});
+test('incoming immediately after activation is not lost while receipts wait in queue',async()=>{
+ await acceptUpdate(env,business('панда отвечай здесь',owner));await acceptUpdate(env,business('Привет'));
+ models.push(peerReply('Привет!'));await drain(env);
+ assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,1);
+});
 test('draft mode sends only to owner',async()=>{await enabled();models.push(peerReply('Привет!'));await acceptUpdate(env,business('Привет'));await drain(env);assert.ok(sent.every(s=>String(s.body.chat_id??owner)===owner));assert.equal((await one(env,'SELECT count(*) AS n FROM proposals')).n,1);});
 test('auto sends neutral reply once and does not style-train on itself',async()=>{await enabled('auto');models.push(peerReply());const u=business('Привет');await acceptUpdate(env,u);await acceptUpdate(env,u);await drain(env);assert.equal(sent.filter(s=>String(s.body.chat_id)===peer).length,1);assert.equal((await context(env,cid)).style_examples.length,0);});
 test('second incoming message continues conversation and repairs repeated greeting',async()=>{
