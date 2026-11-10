@@ -8,7 +8,7 @@ export async function completion(env,messages,{tools,json=false,deadline=Date.no
   if(state?.blocked_until>now)continue;
   const day=new Date(now).toISOString().slice(0,10),used=await one(env,'SELECT tokens FROM usage WHERE day=?',[day]);
   if(used?.tokens>=60000||!await consumeBudget(env))throw new ModelUnavailable('budget');
-  const body={model:p.model,messages,temperature:0.35,...(p.name==='groq'?{max_completion_tokens:850,reasoning_effort:'low'}:{max_tokens:850,provider:{require_parameters:true}}),...(tools?{tools,tool_choice:'auto',parallel_tool_calls:false}:{}),...(json?{response_format:{type:'json_object'}}:{})};
+  const body={model:p.model,messages,temperature:0.35,...(p.name==='groq'?{max_completion_tokens:850,reasoning_effort:'low'}:{max_tokens:850,provider:{require_parameters:true}}),...(tools?{tools,tool_choice:'required',parallel_tool_calls:false}:{}),...(json?{response_format:{type:'json_object'}}:{})};
   let response,data;
   try{response=await (env.FETCH||fetch)(p.url,{method:'POST',headers:{Authorization:'Bearer '+p.key,'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(Math.max(1000,Math.min(p.name==='groq'?8000:10000,deadline-Date.now()-400)))});data=await response.json();}catch{await audit(env,'model_network');continue;}
   if(!response.ok){

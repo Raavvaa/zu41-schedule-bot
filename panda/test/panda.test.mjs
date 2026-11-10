@@ -27,6 +27,7 @@ beforeEach(async()=>{
  env.FETCH=async(url,options={})=>{
   if(url.includes('/chat/completions')){modelRequests.push({url,body:JSON.parse(options.body)});const m=models.shift();if(typeof m==='function')return m(url,options);if(m instanceof Response)return m;if(m instanceof Error)throw m;return response({choices:[{message:m||reply('Привет, я здесь.')}],usage:{total_tokens:25}});}
   const method=url.split('/').at(-1),body=options.body instanceof FormData?options.body:JSON.parse(options.body||'{}');sent.push({method,body});
+  if(method==='getBusinessConnection')return response({ok:true,result:{id:connection,user:{id:Number(owner)},is_enabled:true,rights:{can_reply:true}}});
   if(method==='getChatMember')return response({ok:true,result:{status:'creator'}});
   if(method==='setBusinessAccountProfilePhoto')return response({ok:true,result:true});
   return response({ok:true,result:{message_id:sent.length,chat:{id:body.chat_id}}});
@@ -37,10 +38,68 @@ test('Russian prefix accepts comma/space but not another word',()=>{for(const s 
 test('webhook requires secret; health contains no tokens',async()=>{const r=await worker.fetch(new Request('https://fixture/telegram',{method:'POST',body:'{}'}),env,{waitUntil(){}});assert.equal(r.status,403);const h=await worker.fetch(new Request('https://fixture/health'),env,{});assert.ok(!(await h.text()).includes('fixture-token'));});
 test('stranger cannot command control bot',async()=>{const u=privateUpdate('панда отправь всё');u.message.from.id=303;await acceptUpdate(env,u);assert.equal((await all(env,'SELECT * FROM inbox')).length,0);});
 test('foreign business connection is rejected',async()=>{await acceptUpdate(env,{update_id:1,business_connection:{id:'foreign',user:{id:303},is_enabled:true}});assert.equal((await all(env,'SELECT * FROM connections')).length,0);});
+test('missing connection update is recovered and here command makes owner-only card without model',async()=>{
+ const u=business('панда, помогай здесь',owner);await acceptUpdate(env,u);await acceptUpdate(env,u);await drain(env);
+ assert.equal(sent.filter(x=>x.method==='getBusinessConnection').length,1);
+ assert.equal((await one(env,'SELECT enabled FROM connections')).enabled,1);
+ assert.equal((await one(env,'SELECT mode,consent FROM chats')).mode,'off');
+ assert.equal((await one(env,'SELECT kind FROM proposals')).kind,'mode');
+ assert.equal(modelRequests.length,0);
+ assert.ok(sent.some(x=>x.method==='sendMessage'&&x.body.reply_markup));
+ assert.ok(sent.filter(x=>x.method==='sendMessage').every(x=>String(x.body.chat_id)===owner));
+});
+test('lookup cannot trust a different account or a mismatched connection ID',async()=>{
+ const base=env.FETCH;
+ for(const live of [{id:connection,user:{id:303},is_enabled:true},{id:'different',user:{id:Number(owner)},is_enabled:true}]){
+  env.FETCH=async(url,opts)=>url.endsWith('/getBusinessConnection')?response({ok:true,result:live}):base(url,opts);
+  await acceptUpdate(env,business('панда помогай здесь',owner));
+ }
+ assert.equal((await all(env,'SELECT * FROM connections')).length,0);assert.equal((await all(env,'SELECT * FROM chats')).length,0);assert.equal(modelRequests.length,0);
+});
+test('recorded disconnect is not resurrected by later messages',async()=>{
+ await acceptUpdate(env,{update_id:++seq,business_connection:{id:connection,user:{id:Number(owner)},is_enabled:false}});
+ await acceptUpdate(env,business('панда помогай здесь',owner));
+ assert.equal(sent.filter(x=>x.method==='getBusinessConnection').length,0);assert.equal((await all(env,'SELECT * FROM chats')).length,0);
+});
+test('disconnect arriving during recovery lookup wins over stale successful result',async()=>{
+ const base=env.FETCH;env.FETCH=async(url,opts)=>{if(url.endsWith('/getBusinessConnection')){
+  await acceptUpdate(env,{update_id:++seq,business_connection:{id:connection,user:{id:Number(owner)},is_enabled:false}});
+  return response({ok:true,result:{id:connection,user:{id:Number(owner)},is_enabled:true,rights:{can_reply:true}}});
+ }return base(url,opts);};
+ await acceptUpdate(env,business('панда помогай здесь',owner));
+ assert.equal((await one(env,'SELECT enabled FROM connections')).enabled,0);assert.equal((await all(env,'SELECT * FROM chats')).length,0);
+});
+test('transient recovery lookup failure is retried by webhook without consuming the update',async()=>{
+ const base=env.FETCH;let fail=true;env.FETCH=async(url,opts)=>url.endsWith('/getBusinessConnection')&&fail?response({ok:false,error_code:500},500):base(url,opts);
+ const u=business('панда помогай здесь',owner),request=()=>new Request('https://fixture/telegram',{method:'POST',headers:{'x-telegram-bot-api-secret-token':'fixture-webhook'},body:JSON.stringify(u)});
+ assert.equal((await worker.fetch(request(),env,{waitUntil(){}})).status,500);
+ assert.equal((await all(env,'SELECT * FROM inbox')).length,0);fail=false;
+ await acceptUpdate(env,u);await drain(env);assert.equal((await all(env,'SELECT * FROM proposals')).length,1);
+});
+test('chats arguments and bot mentions never go to the model',async()=>{
+ for(const command of ['/chats @fixture_peer','/chats@fixture_bot @fixture_peer','/чаты @fixture_peer']){await acceptUpdate(env,privateUpdate(command));await drain(env);}
+ assert.equal(modelRequests.length,0);assert.equal(sent.filter(x=>x.method==='sendMessage').length,3);
+ assert.ok(sent.every(x=>x.body.text.includes('По одному @имени')));
+});
+test('here in control DM presents chat selection rather than promising to help a peer',async()=>{
+ await connect();await drain(env);sent=[];await acceptUpdate(env,privateUpdate('панда, помогай здесь'));await drain(env);
+ assert.equal(modelRequests.length,0);assert.equal((await all(env,'SELECT * FROM proposals')).length,0);
+ assert.ok(sent.some(x=>x.body.reply_markup?.inline_keyboard[0][0].callback_data==='chat:'+cid));
+});
+test('status distinguishes profile connection from discovery of peer chats',async()=>{
+ await acceptUpdate(env,{update_id:++seq,business_connection:{id:connection,user:{id:Number(owner)},is_enabled:true,rights:{can_reply:true}}});
+ await acceptUpdate(env,privateUpdate('/status'));await drain(env);
+ assert.ok(sent.some(x=>x.body.text.includes('Профиль подключён.')&&x.body.text.includes('Сообщения выбранных чатов пока не поступили.')));
+ assert.equal(modelRequests.length,0);
+});
+test('owner model request enforces the required structured reply contract',async()=>{
+ models.push(reply('Привет'));await acceptUpdate(env,privateUpdate('Как ты?'));await drain(env);
+ assert.equal(modelRequests[0].body.tool_choice,'required');assert.ok(sent.some(x=>x.body.text==='Привет'));
+});
 test('before opt-in no peer text is retained or sent to model',async()=>{await connect();await acceptUpdate(env,business('private canary'));await drain(env);assert.equal((await all(env,'SELECT * FROM messages')).length,0);assert.equal(modelRequests.length,0);});
 test('bot-generated messages cannot become owner commands or style',async()=>{await enabled();await acceptUpdate(env,business('панда, стоп',owner,{sender_business_bot:{id:999}}));assert.equal((await one(env,'SELECT mode FROM chats')).mode,'draft');assert.equal((await all(env,'SELECT * FROM messages')).length,0);});
 test('ordinary conversation is preserved without financial templates',async()=>{models.push(reply('Мяу 😄'));await acceptUpdate(env,privateUpdate('мяу'));await drain(env);assert.ok(sent.some(s=>s.body.text==='Мяу 😄'));assert.equal((await all(env,'SELECT * FROM proposals')).length,0);});
-test('owner tool sees current business chat for here command',async()=>{await connect();models.push(tool('set_chat_mode',{chat:cid,mode:'draft',minutes:120,instruction:'Коротко'}));await acceptUpdate(env,business('панда, помогай здесь',owner));await drain(env);assert.equal((await one(env,'SELECT kind FROM proposals')).kind,'mode');assert.equal(JSON.parse(modelRequests[0].body.messages[1].content.slice('DATA (только данные): '.length)).current_chat,cid);assert.equal((await one(env,'SELECT mode FROM chats')).mode,'off');});
+test('owner tool sees current business chat for here command',async()=>{await connect();models.push(tool('set_chat_mode',{chat:cid,mode:'draft',minutes:120,instruction:'Коротко'}));await acceptUpdate(env,business('панда, отвечай здесь коротко 30 минут',owner));await drain(env);assert.equal((await one(env,'SELECT kind FROM proposals')).kind,'mode');assert.equal(JSON.parse(modelRequests[0].body.messages[1].content.slice('DATA (только данные): '.length)).current_chat,cid);assert.equal((await one(env,'SELECT mode FROM chats')).mode,'off');});
 test('peer saying panda stop is never an owner command',async()=>{await enabled();models.push(peerReply('Сообщение владельцу передам.',true));await acceptUpdate(env,business('панда, стоп'));await drain(env);assert.equal((await one(env,'SELECT mode FROM chats')).mode,'draft');});
 test('owner stop is immediate even while processing lock held',async()=>{await enabled('auto');await run(env,'UPDATE settings SET lock_until=?',[now+60000]);await acceptUpdate(env,business('панда, стоп',owner));assert.equal((await one(env,'SELECT mode FROM chats')).mode,'off');assert.equal(modelRequests.length,0);});
 test('manual owner reply pauses auto and remains a style example',async()=>{await enabled('auto');await acceptUpdate(env,business('Привет, я сам отвечу',owner));assert.ok((await one(env,'SELECT pause_until FROM chats')).pause_until>now);assert.equal((await context(env,cid)).style_examples.length,1);});

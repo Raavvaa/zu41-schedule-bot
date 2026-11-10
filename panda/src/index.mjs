@@ -5,17 +5,34 @@ import {telegram,setAvatar} from './telegram.mjs';
 
 export const prefix=text=>/^панда(?:[\s,!:]|$)/iu.test(text);
 const strip=text=>text.replace(/^панда[\s,!:]*/iu,'').trim();
+const helpHere=text=>/^(?:помогай|помоги|работай|включись)\s+здесь[.!\s]*$/iu.test(text.trim());
+const slash=text=>text.trim().match(/^\/([\p{L}\w]+)(?:@\w+)?(?:\s+([\s\S]*))?$/u)?.[1]?.toLowerCase();
 export const stopCommand=text=>/^(?:\/stop(?:@\w+)?|стоп|остановись|останови всё|останови все|выключись)[.!\s]*$/iu.test(text.trim());
-const startText='Я Панда 🐼 Можно просто поговорить, попросить запомнить важное или поручить дело.\n\nЧтобы я помогала в твоих личных чатах: включи Business Mode у этого бота в @BotFather → Bot Settings, затем Telegram → Настройки → Автоматизация чатов → выбери меня и нужные чаты. После подключения напиши в нужном чате «панда, помогай здесь» или открой /chats.\n\nСначала покажу черновики тебе. Автоответ включается отдельно и на время. «панда, стоп» или /stop останавливает ответы. Голосовые не обрабатываю.\n/status — состояние, /memory — память, /chats — подключённые чаты.';
+const startText='Я Панда 🐼 Можно просто поговорить, попросить запомнить важное или поручить дело.\n\nЧтобы я помогала в твоих личных чатах: включи Secretary/Business Mode у этого бота в @BotFather → Bot Settings, затем Telegram → Настройки → Изменить → Автоматизация чатов → выбери меня и нужные чаты. После подключения напиши в нужном чате «панда, помогай здесь» или открой /chats.\n\nСначала покажу черновики тебе. Автоответ включается отдельно и на время. «панда, стоп» или /stop останавливает ответы. Голосовые не обрабатываю.\n/status — состояние, /memory — память, /chats — подключённые чаты.';
 
 async function chatButtons(env,eventId){
  const chats=await all(env,'SELECT * FROM chats ORDER BY title LIMIT 20');
- if(!chats.length){await queue(env,'reply:'+eventId,'Пока нет доступных чатов. Подключи Панду в «Автоматизации чатов», затем напиши там «панда, помогай здесь». Для канала добавь меня администратором с правом публикации.');return;}
+ if(!chats.length){const c=await one(env,'SELECT count(*) AS n FROM connections WHERE enabled=1');await queue(env,'reply:'+eventId,(c.n?'Профиль подключён, но сообщения выбранных чатов ещё не поступили.':'Сервер ещё не получил подключение профиля.')+' Если над нужным чатом уже написано «Panda управляет этим чатом», напиши именно там «панда, помогай здесь». Предложение придёт сюда, в личку с Пандой. По одному @имени я не могу открыть чужую личную переписку.');return;}
  await queue(env,'reply:'+eventId,'Выбери чат. Черновики и автоответ включаются только после твоего подтверждения.',{markup:{inline_keyboard:chats.map(c=>[{text:c.title.slice(0,45)+' · '+c.mode,callback_data:'chat:'+c.id}])}});
 }
 async function status(env,eventId){
- const now=clock(env),day=new Date(now).toISOString().slice(0,10),[chats,usage,uncertain,s]=await Promise.all([all(env,'SELECT title,mode,until_at FROM chats'),one(env,'SELECT * FROM usage WHERE day=?',[day]),one(env,"SELECT count(*) AS n FROM outbox WHERE state='unknown'"),one(env,'SELECT paused FROM settings WHERE id=1')]);
- await queue(env,'reply:'+eventId,`Панда работает. ${s.paused?'Автоответы остановлены.':''}\n${chats.map(c=>`${c.title}: ${c.mode==='off'||c.until_at<=now?'выключено':c.mode==='auto'?'автоответ':'черновики'}`).join('\n')||'Чаты ещё не подключены.'}\nОбращений к моделям сегодня: ${usage?.requests??0}/${env.DAILY_REQUEST_LIMIT||120}.\nОтправок с неизвестным результатом: ${uncertain.n}.`);
+ const now=clock(env),day=new Date(now).toISOString().slice(0,10),[chats,usage,uncertain,s,connections]=await Promise.all([all(env,'SELECT title,mode,until_at FROM chats'),one(env,'SELECT * FROM usage WHERE day=?',[day]),one(env,"SELECT count(*) AS n FROM outbox WHERE state='unknown'"),one(env,'SELECT paused FROM settings WHERE id=1'),one(env,'SELECT count(*) AS n FROM connections WHERE enabled=1')]);
+ await queue(env,'reply:'+eventId,`Панда работает. ${s.paused?'Автоответы остановлены.':''}\n${connections.n?'Профиль подключён.':'Сервер ещё не получил подключение профиля.'}\n${chats.map(c=>`${c.title}: ${c.mode==='off'||c.until_at<=now?'выключено':c.mode==='auto'?'автоответ':'черновики'}`).join('\n')||'Сообщения выбранных чатов пока не поступили.'}\nОбращений к моделям сегодня: ${usage?.requests??0}/${env.DAILY_REQUEST_LIMIT||120}.\nОтправок с неизвестным результатом: ${uncertain.n}.`);
+}
+async function resolveConnection(env,id){
+ if(typeof id!=='string'||!id)return null;
+ const known=await one(env,'SELECT * FROM connections WHERE id=?',[id]);
+ // A recorded revocation always wins over an old message or an in-flight lookup.
+ if(known)return known.enabled?known:null;
+ await audit(env,'business_connection_lookup');
+ let live;
+ try{live=await telegram(env,'getBusinessConnection',{business_connection_id:id});}
+ catch(error){if(['400','403','404'].includes(error.code)){await audit(env,'business_connection_invalid');return null;}throw error;}
+ if(live.id!==id||String(live.user?.id)!==String(env.OWNER_ID)){await audit(env,'business_connection_owner_mismatch');return null;}
+ await run(env,'INSERT OR IGNORE INTO connections(id,enabled,rights,at) VALUES(?,?,?,?)',[id,live.is_enabled?1:0,JSON.stringify(live.rights??{}),clock(env)]);
+ const current=await one(env,'SELECT * FROM connections WHERE id=?',[id]);
+ if(current.enabled)await audit(env,'business_connection_recovered');
+ return current.enabled?current:null;
 }
 export async function acceptUpdate(env,u){
  if(!Number.isSafeInteger(u.update_id))return;
@@ -23,7 +40,7 @@ export async function acceptUpdate(env,u){
  if(await one(env,'SELECT id FROM inbox WHERE id=?',[id]))return;
  let event=null;
  if(u.business_connection){
-  const c=u.business_connection;if(String(c.user?.id)!==owner)return;
+  const c=u.business_connection;if(String(c.user?.id)!==owner){await audit(env,'business_connection_owner_mismatch');return;}
   await batch(env,[['INSERT OR IGNORE INTO inbox(id,scope,payload,state,at) VALUES(?,?,?, ?,?)',[id,OWNER,'{}','done',now]],['INSERT INTO connections(id,enabled,rights,at) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,rights=excluded.rights,at=excluded.at',[c.id,c.is_enabled?1:0,JSON.stringify(c.rights??{}),now]]]);
   if(!c.is_enabled){for(const row of await all(env,'SELECT id FROM chats WHERE connection_id=?',[c.id]))await stop(env,row.id);}
   await queue(env,'reply:'+id,c.is_enabled?'Профиль подключён 🐼 Напиши «панда, помогай здесь» в выбранном чате — я предложу включить черновики.':'Подключение отключено. Автоответы остановлены.');return;
@@ -48,8 +65,11 @@ export async function acceptUpdate(env,u){
   if(q.data==='stop:all')await stop(env);
   else if(String(q.data).startsWith('stop:'))await stop(env,String(q.data).slice(5));
  }else if(u.business_message||u.edited_business_message){
-  const m=u.business_message||u.edited_business_message,conn=await one(env,'SELECT * FROM connections WHERE id=? AND enabled=1',[m.business_connection_id]);
-  if(!conn||m.chat?.type!=='private'||m.sender_business_bot)return;
+  const m=u.business_message||u.edited_business_message;
+  if(m.chat?.type!=='private'||m.sender_business_bot)return;
+  const conn=await resolveConnection(env,m.business_connection_id);
+  if(!conn)return;
+  await audit(env,'business_message_accepted');
   const scope=await key(m.business_connection_id+':'+m.chat.id),text=String(m.text??m.caption??''),isOwner=String(m.from?.id)===owner;
   await run(env,'INSERT INTO chats(id,connection_id,telegram_id,title) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title',[scope,m.business_connection_id,String(m.chat.id),[m.chat.first_name,m.chat.last_name].filter(Boolean).join(' ')||m.chat.username||'Личный чат']);
   if(isOwner&&prefix(text)&&!u.edited_business_message){
@@ -138,9 +158,13 @@ async function handle(env,event,deadline){
  else if(stopCommand(event.text))text='Остановила автоответы. Неотправленные предложения отменены.';
  else if(/^\/(start|help)(?:\s|$)/i.test(event.text))text=startText;
  else if(event.text==='/no_voice')text='Голос пока не разбираю. Напиши текстом — помогу.';
- else if(/^\/(chats|чаты)$/i.test(event.text))return chatButtons(env,event.id);
- else if(/^\/(status|статус)$/i.test(event.text))return status(env,event.id);
- else if(/^\/(memory|память)$/i.test(event.text)){
+ else if(['chats','чаты'].includes(slash(event.text)))return chatButtons(env,event.id);
+ else if(['status','статус'].includes(slash(event.text)))return status(env,event.id);
+ else if(helpHere(event.text)){
+  if(!event.target)return chatButtons(env,event.id);
+  await proposalCard(env,event,event.target,'mode',{mode:'draft',minutes:120,instruction:'Коротко и естественно. Новые обещания и неизвестные факты согласовывать со мной.'});return;
+ }
+ else if(['memory','память'].includes(slash(event.text))){
   const facts=await all(env,"SELECT key,value FROM facts WHERE scope='owner' ORDER BY at DESC LIMIT 50");text=facts.length?facts.map(f=>f.key+': '+f.value).join('\n'):'Пока постоянных заметок нет. Напиши «запомни…».';
  }else{
   await putMessage(env,{id:'user:'+event.id,scope:OWNER,role:'user',body:event.text||'[фото]',manual:1});

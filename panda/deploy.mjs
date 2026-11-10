@@ -64,9 +64,9 @@ try{
    console.log('PANDA_PREVIOUS '+JSON.stringify({detached_from_this_worker:checked.url!==url+'/telegram'}));
   }catch{console.log('PANDA_PREVIOUS cleanup_not_confirmed; previous webhook cannot authenticate to the new identity');}
  }
- // Owner-only /start exercises deployed ingestion, D1, outbox and Telegram.
+ // Owner-only /status exercises deployed ingestion, D1, outbox and Telegram.
  const id=-Date.now(),owner=Number(e.OWNER_ID);
- const res=await fetch(url+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':hookSecret},body:JSON.stringify({update_id:id,message:{message_id:id,from:{id:owner},chat:{id:owner,type:'private'},text:'/start'}}),signal:AbortSignal.timeout(10000)});
+ const res=await fetch(url+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':hookSecret},body:JSON.stringify({update_id:id,message:{message_id:id,from:{id:owner},chat:{id:owner,type:'private'},text:'/status'}}),signal:AbortSignal.timeout(10000)});
  if(!res.ok)throw Error('Owner start check was not accepted');
  let out;for(let i=0;i<20;i++){out=(await sql('SELECT state,error FROM outbox WHERE id=?',['reply:'+id]))[0];if(out&&!['pending','sending'].includes(out.state))break;await pause(1000);}
  console.log('PANDA_LIVE '+JSON.stringify({worker:url,bot_username:bot.username,sha,model:probe.provider,webhook:true,telegram_confirmed:out?.state==='sent',delivery_state:out?.state??'pending',needs_start:out?.error==='403',business_mode_enabled:!!bot.can_connect_to_business,auto_default:false,isolated_database:true}));
