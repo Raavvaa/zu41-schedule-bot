@@ -10,7 +10,8 @@ if(!/^[1-9]\d*$/.test(e.OWNER_ID)||!Number.isSafeInteger(Number(e.OWNER_ID)))thr
 const sha=spawnSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).stdout.trim();
 if(!/^[a-f0-9]{40}$/.test(sha))throw Error('Invalid source revision');
 async function request(url,{token='',method='GET',body}={}){
- let r,d;try{r=await fetch(url,{method,headers:{...(token?{Authorization:'Bearer '+token}:{}),'content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(25000)});d=await r.json();}catch{throw Error('Remote service connection failed; private details withheld');}
+ let r,d,raw;try{r=await fetch(url,{method,headers:{...(token?{Authorization:'Bearer '+token}:{}),'content-type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(25000)});raw=await r.text();}catch{throw Error('Remote transport failed; private details withheld');}
+ try{d=JSON.parse(raw);}catch{const code=raw.match(/\b(1101|1102|1015)\b/)?.[1]||'none';throw Error('Non-JSON response HTTP '+r.status+' content-type '+String(r.headers.get('content-type')).slice(0,60)+' Cloudflare-code '+code);}
  if(!r.ok||d.success===false||d.ok===false)throw Error('Remote service HTTP '+r.status);return d;
 }
 const cf=async(path,method='GET',body)=>(await request('https://api.cloudflare.com/client/v4/accounts/'+e.CLOUDFLARE_ACCOUNT_ID+path,{token:e.CLOUDFLARE_API_TOKEN,method,body})).result;
@@ -38,6 +39,7 @@ try{
  config.vars.ENABLED='true';await save();cli(['deploy']);activated=true;
  let health;for(let i=0;i<12;i++){try{health=await request(url+'/health');if(health.version===sha&&health.enabled)break;}catch{}await pause(1500);}
  if(health?.version!==sha||!health.enabled)throw Error('Live Panda version not confirmed');
+ console.log('PANDA_STAGE live-model-probe');
  const probe=await request(url+'/ops/probe',{token:adminSecret,method:'POST',body:{}});
  if(!probe.ok)throw Error('Live Panda model not confirmed');
  await tg('setMyCommands',{commands:[{command:'start',description:'Знакомство и подключение'},{command:'chats',description:'Выбрать чат и режим'},{command:'status',description:'Состояние Панды'},{command:'memory',description:'Что я помню'},{command:'stop',description:'Остановить все автоответы'}]});
