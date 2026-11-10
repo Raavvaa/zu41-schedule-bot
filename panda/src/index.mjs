@@ -1,6 +1,6 @@
-import {one,all,run,batch,key,clock,OWNER,getChat,putMessage,queue,stop,maintenance,audit,createProposal,recentReplies} from './store.mjs';
+import {one,all,run,batch,key,clock,OWNER,getChat,putMessage,queue,stop,maintenance,audit,createProposal,recentReplies,budgets} from './store.mjs';
 import {ownerTurn,peerTurn,proposalCard} from './agent.mjs';
-import {completion} from './providers.mjs';
+import {completion,diagnostic} from './providers.mjs';
 import {telegram,setAvatar} from './telegram.mjs';
 import {repeatedReply} from './dialogue.mjs';
 
@@ -19,7 +19,7 @@ async function chatButtons(env,eventId){
 }
 async function status(env,eventId){
  const now=clock(env),day=new Date(now).toISOString().slice(0,10),[chats,usage,uncertain,s,connections]=await Promise.all([all(env,'SELECT title,mode,until_at FROM chats'),one(env,'SELECT * FROM usage WHERE day=?',[day]),one(env,"SELECT count(*) AS n FROM outbox WHERE state='unknown'"),one(env,'SELECT paused FROM settings WHERE id=1'),one(env,'SELECT count(*) AS n FROM connections WHERE enabled=1')]);
- await queue(env,'reply:'+eventId,`Панда работает. ${s.paused?'Автоответы остановлены.':''}\n${connections.n?'Профиль подключён.':'Сервер ещё не получил подключение профиля.'}\n${chats.map(c=>`${c.title}: ${c.mode==='off'||c.until_at<=now?'выключено':c.mode==='auto'?'автоответ':'черновики'}`).join('\n')||'Сообщения выбранных чатов пока не поступили.'}\nОбращений к моделям сегодня: ${usage?.requests??0}/${env.DAILY_REQUEST_LIMIT||120}.\nОтправок с неизвестным результатом: ${uncertain.n}.`);
+ await queue(env,'reply:'+eventId,`Панда работает. ${s.paused?'Автоответы остановлены.':''}\n${connections.n?'Профиль подключён.':'Сервер ещё не получил подключение профиля.'}\n${chats.map(c=>`${c.title}: ${c.mode==='off'||c.until_at<=now?'выключено':c.mode==='auto'?'автоответ':'черновики'}`).join('\n')||'Сообщения выбранных чатов пока не поступили.'}\nОбращений к моделям сегодня: ${(await budgets(env)).map(b=>b.provider+': остаток '+b.requests+' запросов / '+b.tokens+' токенов').join('; ')}.\nОтправок с неизвестным результатом: ${uncertain.n}.`);
 }
 async function enableAutoHere(env,scope){
  const c=await getChat(env,scope);
@@ -245,8 +245,8 @@ export async function drain(env,deadline=Date.now()+24000){
    const finish=()=>batch(env,group.map(x=>["UPDATE inbox SET state='done',payload='{}' WHERE id=?",[x.id]]));
    try{await handle(env,event,deadline-1000);await finish();}
    catch(error){
-    await audit(env,error.kind==='budget'?'model_budget':'turn_failed');
-    await queue(env,'error:'+row.id,event.type==='peer'?'Модель сейчас недоступна. Ответ собеседнику не отправлен.':error.kind==='budget'?'На сегодня исчерпан бюджет модели. /status, /chats и /stop продолжают работать.':'Модель сейчас недоступна. Попробуй чуть позже; /stop и /status работают.');
+    await audit(env,error.kind||'turn_failed');
+    await queue(env,'error:'+row.id,diagnostic(error)+(event.type==='peer'?'\nОтвет собеседнику не отправлен.':''));
     await finish();
    }
    await flush(env,deadline);

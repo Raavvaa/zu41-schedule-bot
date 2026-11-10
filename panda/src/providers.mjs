@@ -1,26 +1,33 @@
-import {one,run,clock,consumeBudget,audit} from './store.mjs';
-export class ModelUnavailable extends Error{constructor(kind='unavailable'){super(kind);this.kind=kind;}}
-export async function completion(env,messages,{tools,json=false,deadline=Date.now()+20000}={}){
- const chain=[{name:'groq',url:'https://api.groq.com/openai/v1/chat/completions',key:env.GROQ_API_KEY,model:env.GROQ_MODEL||'openai/gpt-oss-120b'},{name:'openrouter',url:'https://openrouter.ai/api/v1/chat/completions',key:env.OPENROUTER_API_KEY,model:env.OPENROUTER_MODEL||'openrouter/free'}];
- for(const p of chain){
-  if(!p.key||Date.now()>deadline-1200)continue;
-  const now=clock(env),state=await one(env,'SELECT blocked_until FROM providers WHERE name=?',[p.name]);
-  if(state?.blocked_until>now)continue;
-  const day=new Date(now).toISOString().slice(0,10),used=await one(env,'SELECT tokens FROM usage WHERE day=?',[day]);
-  if(used?.tokens>=60000||!await consumeBudget(env))throw new ModelUnavailable('budget');
-  const body={model:p.model,messages,temperature:0.35,...(p.name==='groq'?{max_completion_tokens:850,reasoning_effort:'low'}:{max_tokens:850,provider:{require_parameters:true}}),...(tools?{tools,tool_choice:'required',parallel_tool_calls:false}:{}),...(json?{response_format:{type:'json_object'}}:{})};
+import {one,run,clock,audit,budgets,reserveProvider,accountProvider} from './store.mjs';
+export class ModelUnavailable extends Error {constructor(failures=[],remaining=[]){super('Provider request failed');this.failures=failures;this.remaining=remaining;this.kind=failures.at(-1)?.kind||'NETWORK_TIMEOUT';}}
+export function parseJSON(text){try{return JSON.parse(String(text).trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));}catch{return null;}}
+// Never echo arbitrary upstream text: it can contain prompts, identities or credentials.
+export function safeErrorBody(data){const text=JSON.stringify(data).toLowerCase();return ['model','not found','unsupported','response_format','tools','invalid','rate limit','quota','authentication','permission','context length'].filter(s=>text.includes(s)).join('; ').slice(0,200)||'[upstream body withheld]';}
+export const providerConfig=env=>[
+ {name:'groq',base:'https://api.groq.com/openai/v1',key:env.GROQ_API_KEY,model:env.GROQ_MODEL||'openai/gpt-oss-120b'},
+ {name:'siliconflow',base:(env.SILICONFLOW_BASE_URL||'https://api.siliconflow.com/v1').replace(/\/$/,''),key:env.SILICONFLOW_API_KEY,model:env.SILICONFLOW_CHAT_MODEL||'Qwen/Qwen2.5-7B-Instruct'},
+ {name:'openrouter',base:'https://openrouter.ai/api/v1',key:env.OPENROUTER_API_KEY,model:env.OPENROUTER_MODEL||'openrouter/free'}];
+export function diagnostic(error){if(!(error instanceof ModelUnavailable))return 'Не удалось обработать поручение. /stop и /status работают.';return error.failures.map(f=>`${f.kind}: ${f.provider}${f.status?' HTTP '+f.status:''}${f.retry_after?' retry_after='+f.retry_after+' сек.':''}${f.body?' '+f.body:''}`).join('\n')+'\nОстатки внутренних лимитов: '+error.remaining.map(b=>`${b.provider}: ${b.requests} запросов, ${b.tokens} токенов`).join('; ');}
+export async function completion(env,messages,{tools,json=false,deadline=Date.now()+20000,only}={}){
+ const failures=[];
+ for(const p of providerConfig(env)){
+  if(!p.key||(only&&p.name!==only))continue;
+  const now=clock(env),state=await one(env,'SELECT * FROM providers WHERE name=?',[p.name]);
+  if(state?.blocked_until>now){failures.push({kind:state.kind==='429'?'PROVIDER_RATE_LIMIT':'PROVIDER_HTTP_ERROR',provider:p.name,status:Number(state.kind)||undefined,retry_after:Math.ceil((state.blocked_until-now)/1000)});continue;}
+  const day=await reserveProvider(env,p.name);if(!day){failures.push({kind:'BUDGET_INTERNAL',provider:p.name});continue;}
+  if(Date.now()>deadline-100){failures.push({kind:'NETWORK_TIMEOUT',provider:p.name});continue;}
+  let input=messages,body={model:p.model,messages:input,temperature:0.35,...(p.name==='groq'?{max_completion_tokens:850,reasoning_effort:'low'}:{max_tokens:850})};
+  if(tools&&p.name==='groq')Object.assign(body,{tools,tool_choice:'required',parallel_tool_calls:false});
+  else if(tools){body.messages=[{role:'system',content:'Return JSON only: {"name":tool name,"arguments":object}. Tool schemas: '+JSON.stringify(tools)},...messages.map(m=>m.role==='tool'?{role:'user',content:'Tool result: '+m.content}:m)];body.response_format={type:'json_object'};}
+  if(json)body.response_format={type:'json_object'};
   let response,data;
-  try{response=await (env.FETCH||fetch)(p.url,{method:'POST',headers:{Authorization:'Bearer '+p.key,'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(Math.max(1000,Math.min(p.name==='groq'?8000:10000,deadline-Date.now()-400)))});data=await response.json();}catch{await audit(env,'model_network');continue;}
-  if(!response.ok){
-   const retry=Number(response.headers.get('retry-after'));
-   const wait=response.status===429?(Number.isFinite(retry)&&retry>0?Math.min(retry,86400)*1000:60000):[401,402,403].includes(response.status)?3600000:response.status>=500?15000:5000;
-   await run(env,'INSERT INTO providers(name,blocked_until,kind) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET blocked_until=excluded.blocked_until,kind=excluded.kind',[p.name,now+wait,String(response.status)]);
-   await audit(env,'model_http_'+response.status);continue;
-  }
-  const n=Number(data.usage?.total_tokens)||0;await run(env,'UPDATE usage SET tokens=tokens+? WHERE day=?',[n,day]);
-  const message=data.choices?.[0]?.message;
-  if(!message||(!message.content&&!message.tool_calls?.length)){await audit(env,'model_empty');continue;}
+  try{response=await (env.FETCH||fetch)(p.base+'/chat/completions',{method:'POST',headers:{Authorization:'Bearer '+p.key,'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(Math.max(1,Math.min(p.name==='groq'?4000:6000,deadline-Date.now())))});const raw=await response.text();data=parseJSON(raw)||{};}catch{failures.push({kind:'NETWORK_TIMEOUT',provider:p.name});await audit(env,'NETWORK_TIMEOUT_'+p.name);continue;}
+  if(!response.ok){const retry=Number(response.headers.get('retry-after'))||60;const f={kind:response.status===429?'PROVIDER_RATE_LIMIT':'PROVIDER_HTTP_ERROR',provider:p.name,status:response.status,body:safeErrorBody(data),...(response.status===429?{retry_after:retry}:{})};failures.push(f);await run(env,'INSERT INTO providers(name,blocked_until,kind) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET blocked_until=excluded.blocked_until,kind=excluded.kind',[p.name,now+(response.status===429?Math.min(retry,86400):5)*1000,String(response.status)]);await audit(env,f.kind+'_'+p.name+'_'+response.status);continue;}
+  const n=Number(data.usage?.total_tokens)||new TextEncoder().encode(JSON.stringify(body)).length+850;await accountProvider(env,p.name,day,n);
+  let message=data.choices?.[0]?.message;
+  if(tools&&p.name!=='groq'&&message?.content){const x=parseJSON(message.content);if(x&&tools.some(t=>t.function.name===x.name)&&x.arguments&&typeof x.arguments==='object')message={role:'assistant',tool_calls:[{id:'json-tool',type:'function',function:{name:x.name,arguments:JSON.stringify(x.arguments)}}]};}
+  if(!message||(!message.content&&!message.tool_calls?.length)){failures.push({kind:'PROVIDER_HTTP_ERROR',provider:p.name,status:200,body:'invalid response'});continue;}
   return {message,provider:p.name,tokens:n};
  }
- throw new ModelUnavailable();
+ throw new ModelUnavailable(failures,await budgets(env));
 }

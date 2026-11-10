@@ -32,3 +32,5 @@ console.log('PANDA_DIAG_DIALOGUE '+JSON.stringify({
  proposals:await sql("SELECT kind,status,count(*) AS n FROM proposals WHERE at>? GROUP BY kind,status",[since])
 }));
 for(const c of connections){try{const live=await tg('getBusinessConnection',{business_connection_id:c.id});console.log('PANDA_DIAG_CONNECTION '+JSON.stringify({stored_enabled:!!c.enabled,live_enabled:!!live.is_enabled,owner_matches:String(live.user?.id)===String(e.OWNER_ID),can_reply:!!live.rights?.can_reply,can_read:!!live.rights?.can_read_messages}));}catch{console.log('PANDA_DIAG_CONNECTION lookup_failed');}}
+
+if((await sql("SELECT name FROM sqlite_master WHERE type='table' AND name='provider_usage'")).length)console.log('PANDA_PROVIDER_BUDGET '+JSON.stringify(await sql('SELECT provider,requests,tokens FROM provider_usage WHERE day=?',[day])));

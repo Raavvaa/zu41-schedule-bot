@@ -54,11 +54,6 @@ export async function createProposal(env,eventId,scope,kind,payload){
  await run(env,'INSERT OR IGNORE INTO proposals(id,event_id,scope,kind,payload,revision,expires_at,at) VALUES(?,?,?,?,?,?,?,?)',[id,eventId,scope,kind,JSON.stringify(payload),c?.revision??0,now+300000,now]);
  return one(env,'SELECT * FROM proposals WHERE id=?',[id]);
 }
-export async function consumeBudget(env){
- const day=new Date(clock(env)).toISOString().slice(0,10),limit=Math.min(120,Math.max(1,Number(env.DAILY_REQUEST_LIMIT)||120));
- await run(env,'INSERT OR IGNORE INTO usage(day) VALUES(?)',[day]);
- const r=await run(env,'UPDATE usage SET requests=requests+1 WHERE day=? AND requests<?',[day,limit]);return r.meta.changes===1;
-}
 export async function maintenance(env){
  const now=clock(env);
  await run(env,"UPDATE inbox SET state='pending' WHERE state='processing' AND lease_until<?",[now]);
@@ -68,3 +63,18 @@ export async function maintenance(env){
  if(now-s.cleanup_at<3600000)return;
  await batch(env,[['DELETE FROM messages WHERE at<?',[now-72*3600000]],["DELETE FROM inbox WHERE state='done' AND at<?",[now-7*86400000]],["UPDATE proposals SET status='expired',payload='{}' WHERE status='pending' AND expires_at<?",[now]],["UPDATE outbox SET state='expired',payload='{}' WHERE state='pending' AND expires_at<?",[now]],["UPDATE proposals SET payload='{}' WHERE status<>'pending' AND at<?",[now-86400000]],["UPDATE outbox SET payload='{}' WHERE state IN ('sent','failed','cancelled','expired') AND at<?",[now-86400000]],['DELETE FROM audit WHERE at<?',[now-30*86400000]],['UPDATE settings SET cleanup_at=? WHERE id=1',[now]]]);
 }
+
+export const providerDefaults={groq:[200000,500],siliconflow:[500000,1000],openrouter:[50000,100]};
+export async function budgets(env){
+ const day=new Date(clock(env)).toISOString().slice(0,10),rows=await all(env,'SELECT * FROM provider_usage WHERE day=?',[day]);
+ return Object.entries(providerDefaults).map(([provider,[tokens,requests]])=>{const used=rows.find(r=>r.provider===provider)||{};const limit=(suffix,fallback)=>{const n=Number(env[provider.toUpperCase()+'_DAILY_'+suffix]);return Number.isFinite(n)&&n>=0&&env[provider.toUpperCase()+'_DAILY_'+suffix]!==undefined?Math.floor(n):fallback;};return {provider,tokens:Math.max(0,limit('TOKENS',tokens)-(used.tokens||0)),requests:Math.max(0,limit('REQUESTS',requests)-(used.requests||0))};});
+}
+export async function reserveProvider(env,provider){
+ const day=new Date(clock(env)).toISOString().slice(0,10),b=(await budgets(env)).find(x=>x.provider===provider);
+ if(!b?.tokens||!b.requests)return false;
+ await run(env,'INSERT OR IGNORE INTO provider_usage(day,provider) VALUES(?,?)',[day,provider]);
+ const row=await one(env,'SELECT requests,tokens FROM provider_usage WHERE day=? AND provider=?',[day,provider]);
+ const r=await run(env,'UPDATE provider_usage SET requests=requests+1 WHERE day=? AND provider=? AND requests=? AND tokens=?',[day,provider,row.requests,row.tokens]);
+ return r.meta.changes===1?day:false;
+}
+export async function accountProvider(env,provider,day,tokens){await run(env,'UPDATE provider_usage SET tokens=tokens+? WHERE day=? AND provider=?',[Math.max(0,Number(tokens)||0),day,provider]);}

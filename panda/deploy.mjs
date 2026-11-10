@@ -1,5 +1,5 @@
 // Isolated Panda resources only. No credentials or owner identifiers in output.
-import {readFile,writeFile,unlink} from 'node:fs/promises';
+import {readFile,writeFile,unlink,readdir} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {createHmac} from 'node:crypto';
 const e=process.env,name='panda-personal-agent';
@@ -29,7 +29,7 @@ let db=(await cf('/d1/database')).find(x=>x.name===databaseName);
 if(!db)db=await cf('/d1/database','POST',{name:databaseName});
 if(db.name!==databaseName||!db.uuid)throw Error('Panda database guard');
 const sql=async(statement,params=[])=>{const r=await cf('/d1/database/'+db.uuid+'/query','POST',{sql:statement,params});if(!r?.[0]?.success)throw Error('Panda schema/query failed');return r[0].results;};
-for(const statement of (await readFile('panda/migrations/0001.sql','utf8')).split(';').filter(x=>x.trim()))await sql(statement);
+for(const file of (await readdir('panda/migrations')).filter(f=>f.endsWith('.sql')).sort())for(const statement of (await readFile('panda/migrations/'+file,'utf8')).split(';').filter(x=>x.trim()))await sql(statement);
 const sub=await cf('/workers/subdomain'),url=`https://${name}.${sub.subdomain}.workers.dev`;
 const existingHook=await tg('getWebhookInfo');
 if(existingHook.url&&existingHook.url!==url+'/telegram')throw Error('Replacement bot already has a different webhook; no cutover performed');

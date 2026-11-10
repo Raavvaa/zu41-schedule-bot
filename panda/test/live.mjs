@@ -1,6 +1,6 @@
 // Synthetic data only, temporary D1, Telegram is stubbed; max 10 model requests.
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
+import {readFile,readdir} from 'node:fs/promises';
 import {Miniflare} from 'miniflare';
 import {ownerTurn,PEER_SYSTEM,parsePeer} from '../src/agent.mjs';
 import {completion} from '../src/providers.mjs';
@@ -10,7 +10,7 @@ import {repeatedReply} from '../src/dialogue.mjs';
 const mf=new Miniflare({modules:true,script:'export default {fetch(){return new Response("test")}}',d1Databases:['DB'],compatibilityDate:'2026-07-30'});
 let requests=0;const providers=new Set(),sent=[];
 try{
- const DB=await mf.getD1Database('DB');await DB.exec((await readFile(new URL('../migrations/0001.sql',import.meta.url),'utf8')).replace(/\n/g,' '));
+ const DB=await mf.getD1Database('DB');for(const file of (await readdir(new URL('../migrations/',import.meta.url))).sort())await DB.exec((await readFile(new URL('../migrations/'+file,import.meta.url),'utf8')).replace(/\n/g,' '));
  const env={DB,OWNER_ID:'101',TELEGRAM_BOT_TOKEN:'synthetic-only',GROQ_API_KEY:process.env.GROQ_API_KEY,OPENROUTER_API_KEY:process.env.OPENROUTER_API_KEY,FETCH:async(url,opts)=>{
   if(url==='https://api.telegram.org/botsynthetic-only/sendMessage'){const body=JSON.parse(opts.body);sent.push(body);return Response.json({ok:true,result:{message_id:sent.length}});}
   assert.ok(url==='https://api.groq.com/openai/v1/chat/completions'||url==='https://openrouter.ai/api/v1/chat/completions');if(++requests>10)throw Error('Live request limit');const r=await fetch(url,opts);if(r.ok)providers.add(url.includes('groq.com')?'groq':'openrouter');return r;
