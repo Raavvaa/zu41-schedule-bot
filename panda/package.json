@@ -1,1 +1,15 @@
-{"name":"panda-personal-agent","version":"0.1.0","private":true,"type":"module","scripts":{"test":"node --test --test-concurrency=1 test/*.test.mjs","check":"node --check src/index.mjs && node --check src/agent.mjs && node --check src/store.mjs && node --check src/providers.mjs && node --check deploy.mjs && node --check src/dialogue.mjs && node --check diagnose.mjs","live":"node test/live.mjs"},"devDependencies":{"miniflare":"4.20260730.0","wrangler":"4.149.0"}}
+{
+  "name": "panda-personal-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 test/*.test.mjs",
+    "check": "node --check src/index.mjs && node --check src/agent.mjs && node --check src/store.mjs && node --check src/providers.mjs && node --check deploy.mjs && node --check src/dialogue.mjs && node --check diagnose.mjs && node --check src/router.mjs && node --check src/background.mjs",
+    "live": "node test/live.mjs"
+  },
+  "devDependencies": {
+    "miniflare": "4.20260730.0",
+    "wrangler": "4.149.0"
+  }
+}

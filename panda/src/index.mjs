@@ -72,7 +72,7 @@ export async function acceptUpdate(env,u){
   const d=u.deleted_business_messages;if(!await one(env,'SELECT id FROM connections WHERE id=?',[d.business_connection_id]))return;
   const scope=await key(d.business_connection_id+':'+d.chat.id);
   await run(env,'UPDATE chats SET revision=revision+1,summary=? WHERE id=?',['',scope]);
-  for(const mid of d.message_ids??[])await run(env,'DELETE FROM messages WHERE id=?',[scope+':'+mid]);return;
+  for(const mid of d.message_ids??[])await batch(env,[['DELETE FROM messages WHERE id=?',[scope+':'+mid]],['DELETE FROM chat_facts WHERE chat_id=? AND source_message_id=?',[scope,scope+':'+mid]]]);await run(env,'DELETE FROM conversation_state WHERE chat_id=?',[scope]);return;
  }
  if(u.callback_query){
   const q=u.callback_query;if(String(q.from?.id)!==owner)return;
@@ -88,6 +88,7 @@ export async function acceptUpdate(env,u){
   await audit(env,'business_message_accepted');
   const scope=await key(m.business_connection_id+':'+m.chat.id),text=String(m.text??m.caption??''),isOwner=String(m.from?.id)===owner;
   await run(env,'INSERT INTO chats(id,connection_id,telegram_id,title) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title',[scope,m.business_connection_id,String(m.chat.id),[m.chat.first_name,m.chat.last_name].filter(Boolean).join(' ')||m.chat.username||'Личный чат']);
+  if(m.chat.username)await run(env,'INSERT OR IGNORE INTO chat_aliases(chat_id,alias) VALUES(?,?)',[scope,String(m.chat.username).toLowerCase()]);
   if(isOwner&&prefix(text)&&!u.edited_business_message){
    const command=strip(text);if(stopCommand(command))await stop(env,scope);
    // Explicit local activation is applied at ingestion, just like stop. The
@@ -104,7 +105,7 @@ export async function acceptUpdate(env,u){
    else await run(env,'UPDATE chats SET last_incoming=?,pause_until=0,revision=revision+1 WHERE id=?',[now,scope]);
    if(!c.consent||c.mode==='off'||c.until_at<=now)return;
    if(!text||m.voice||m.audio||m.video_note){if(!isOwner)await queue(env,'media:'+id,'В чате «'+c.title+'» пришло сообщение без текста. Я его не анализировала.');return;}
-   if(u.edited_business_message)await run(env,'DELETE FROM messages WHERE id=?',[messageId]);
+   if(u.edited_business_message)await batch(env,[['DELETE FROM messages WHERE id=?',[messageId]],['DELETE FROM chat_facts WHERE chat_id=? AND source_message_id=?',[scope,messageId]],['DELETE FROM conversation_state WHERE chat_id=?',[scope]]]);
    const quoted=m.reply_to_message,quoteText=quoted?.text??quoted?.caption;
    const replyContext=!isOwner&&quoted?(quoteText?'\n[Ответ на цитату: '+String(quoteText).slice(0,500)+']':quoted.voice||quoted.audio?'\n[Ответ на голосовое: содержимое не распознано]':''):'';
    await putMessage(env,{id:messageId,scope,role:isOwner?'assistant':'user',body:text+replyContext,manual:isOwner?1:0});
@@ -258,6 +259,7 @@ export async function drain(env,deadline=Date.now()+24000){
  // A concurrent webhook can have queued work while this worker owned the lock.
  if(Date.now()<deadline-4000&&await one(env,"SELECT id FROM inbox WHERE state='pending' AND not_before<=? LIMIT 1",[clock(env)]))return drain(env,deadline);
 }
+async function work(env){const deadline=Date.now()+28000;try{await drain(env,Math.min(deadline,Date.now()+22000));await background(env,deadline);}catch{}}
 export default {
  async fetch(request,env,ctx){
   const url=new URL(request.url);
@@ -269,7 +271,7 @@ export default {
   }
   if(url.pathname!=='/telegram'||request.method!=='POST')return new Response('not found',{status:404});
   if(!env.WEBHOOK_SECRET||request.headers.get('x-telegram-bot-api-secret-token')!==env.WEBHOOK_SECRET)return new Response('forbidden',{status:403});
-  try{const raw=await request.text();if(raw.length>120000)return new Response('too large',{status:413});const u=JSON.parse(raw);await acceptUpdate(env,u);ctx.waitUntil(drain(env).then(()=>background(env)).catch(()=>{}));return new Response('ok');}catch{return new Response('retry',{status:500});}
+  try{const raw=await request.text();if(raw.length>120000)return new Response('too large',{status:413});const u=JSON.parse(raw);await acceptUpdate(env,u);ctx.waitUntil(work(env));return new Response('ok');}catch{return new Response('retry',{status:500});}
  },
- async scheduled(_controller,env,ctx){if(env.ENABLED==='true')ctx.waitUntil(drain(env).then(()=>background(env)).catch(()=>{}));}
+ async scheduled(_controller,env,ctx){if(env.ENABLED==='true')ctx.waitUntil(work(env));}
 };
