@@ -13,7 +13,7 @@
   },
   "vars": {
     "ENABLED": "false",
-    "GROQ_MODEL": "openai/gpt-oss-120b",
+    "GROQ_MODEL": "openai/gpt-oss-20b",
     "OPENROUTER_MODEL": "openrouter/free",
     "GROQ_DAILY_TOKENS": "200000",
     "GROQ_DAILY_REQUESTS": "500",
