@@ -48,7 +48,7 @@ try{
  let health;for(let i=0;i<12;i++){try{health=await request(url+'/health');if(health.version===sha&&health.enabled)break;}catch{}await pause(1500);}
  if(health?.version!==sha||!health.enabled)throw Error('Live Panda version not confirmed');
  console.log('PANDA_STAGE live-model-probe');
- try{const aiProbe=await request(url+'/ops/probe?provider=cloudflare',{token:adminSecret,method:'POST',body:{}});console.log('PANDA_WORKERS_AI '+JSON.stringify(aiProbe));}catch{console.log('PANDA_WORKERS_AI '+JSON.stringify({available:false,reason:'probe_failed',fallback_preserved:true}));}
+ for(let attempt=0;attempt<3;attempt++){try{const aiProbe=await request(url+'/ops/probe?provider=cloudflare',{token:adminSecret,method:'POST',body:{}});console.log('PANDA_WORKERS_AI '+JSON.stringify(aiProbe));break;}catch{if(attempt===2)console.log('PANDA_WORKERS_AI '+JSON.stringify({available:false,reason:'probe_failed',fallback_preserved:true}));else await pause(1500);}}
  let probe;
  // Different edge locations can briefly serve the disabled deployment even
  // after health sees the activated one. Retry only this transient HTTP state.
