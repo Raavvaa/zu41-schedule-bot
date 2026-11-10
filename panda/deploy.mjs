@@ -15,7 +15,8 @@ async function request(url,{token='',method='GET',body}={}){
  if(!r.ok||d.success===false||d.ok===false)throw Error('Remote service HTTP '+r.status);return d;
 }
 const cf=async(path,method='GET',body)=>(await request('https://api.cloudflare.com/client/v4/accounts/'+e.CLOUDFLARE_ACCOUNT_ID+path,{token:e.CLOUDFLARE_API_TOKEN,method,body})).result;
-const tg=async(method,body)=>(await request('https://api.telegram.org/bot'+e.PANDA_BOT_TOKEN+'/'+method,{method:'POST',body:body??{}})).result;
+// These setup/get methods are idempotent; retry transport errors without replaying messages.
+const tg=async(method,body)=>{for(let attempt=0;attempt<3;attempt++){try{return (await request('https://api.telegram.org/bot'+e.PANDA_BOT_TOKEN+'/'+method,{method:'POST',body:body??{}})).result;}catch(error){if(attempt===2||!error.message.startsWith('Remote transport failed'))throw error;await new Promise(resolve=>setTimeout(resolve,1500));}}};
 const bot=await tg('getMe');
 if(!bot.is_bot||String(bot.id)!==e.PANDA_BOT_TOKEN.split(':')[0])throw Error('Panda identity check failed');
 if(String(bot.id)!==e.EXPECTED_PANDA_BOT_ID)throw Error('Unexpected replacement bot identity');
