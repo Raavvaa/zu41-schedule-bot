@@ -1,4 +1,4 @@
-import {one,all,run,batch,key,clock,OWNER,getChat,putMessage,queue,stop,maintenance,audit,createProposal,recentReplies,budgets} from './store.mjs';
+import {one,all,run,batch,key,clock,OWNER,getChat,putMessage,queue,stop,maintenance,audit,createProposal,recentReplies,budgets,snapshotChat} from './store.mjs';
 import {ownerTurn,peerTurn,proposalCard} from './agent.mjs';
 import {completion,diagnostic} from './providers.mjs';
 import {telegram,setAvatar} from './telegram.mjs';
@@ -25,6 +25,7 @@ async function enableAutoHere(env,scope){
  const c=await getChat(env,scope);
  const conn=c?.kind==='private'?await one(env,'SELECT * FROM connections WHERE id=? AND enabled=1',[c.connection_id]):null;
  if(!conn||!JSON.parse(conn.rights).can_reply)return 'В настройках подключения нужно разрешить ответы.';
+ await snapshotChat(env,c.id);
  await batch(env,[
   ['UPDATE settings SET paused=0 WHERE id=1'],
   ["UPDATE chats SET mode='auto',consent=1,until_at=?,pause_until=0,revision=revision+1 WHERE id=?",[clock(env)+120*60000,c.id]],
@@ -131,6 +132,7 @@ async function applyProposal(env,event,p){
  if(p.kind==='mode'){
   const conn=await one(env,'SELECT * FROM connections WHERE id=? AND enabled=1',[c.connection_id]);
   if(!conn||!JSON.parse(conn.rights).can_reply)return 'В настройках подключения нужно разрешить ответы.';
+  await snapshotChat(env,c.id);
   updates.push(['UPDATE settings SET paused=0 WHERE id=1'],['UPDATE chats SET mode=?,consent=1,until_at=?,instruction=?,pause_until=0,revision=revision+1 WHERE id=?',[payload.mode,now+payload.minutes*60000,payload.instruction,c.id]]);
   await batch(env,updates);return `В чате «${c.title}» включены ${payload.mode==='auto'?'автоответы':'черновики'} на ${payload.minutes} мин. Новые обязательства — через тебя. Остановить: /stop.`;
  }
