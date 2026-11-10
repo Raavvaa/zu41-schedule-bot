@@ -6,6 +6,7 @@ import worker,{acceptUpdate,drain,flush,canSend,prefix,stopCommand} from '../src
 import {one,all,run,context,putFact,putMessage,createProposal,queue,stop,maintenance,key} from '../src/store.mjs';
 import {ownerTurn,peerTurn,parsePeer} from '../src/agent.mjs';
 import {completion} from '../src/providers.mjs';
+import {repeatedReply} from '../src/dialogue.mjs';
 
 let mf,env,now,sent,models,modelRequests,cid,seq;
 const owner='101',peer='202',connection='fixture-connection';
@@ -105,6 +106,54 @@ test('owner stop is immediate even while processing lock held',async()=>{await e
 test('manual owner reply pauses auto and remains a style example',async()=>{await enabled('auto');await acceptUpdate(env,business('Привет, я сам отвечу',owner));assert.ok((await one(env,'SELECT pause_until FROM chats')).pause_until>now);assert.equal((await context(env,cid)).style_examples.length,1);});
 test('draft mode sends only to owner',async()=>{await enabled();models.push(peerReply('Привет!'));await acceptUpdate(env,business('Привет'));await drain(env);assert.ok(sent.every(s=>String(s.body.chat_id??owner)===owner));assert.equal((await one(env,'SELECT count(*) AS n FROM proposals')).n,1);});
 test('auto sends neutral reply once and does not style-train on itself',async()=>{await enabled('auto');models.push(peerReply());const u=business('Привет');await acceptUpdate(env,u);await acceptUpdate(env,u);await drain(env);assert.equal(sent.filter(s=>String(s.body.chat_id)===peer).length,1);assert.equal((await context(env,cid)).style_examples.length,0);});
+test('second incoming message continues conversation and repairs repeated greeting',async()=>{
+ await enabled('auto');models.push(peerReply('Привет!'));await acceptUpdate(env,business('Привет'));await drain(env);
+ models.push(peerReply('Привет!!'),peerReply('Что тебя так рассмешило?'));await acceptUpdate(env,business('Ахахах'));await drain(env);
+ assert.deepEqual(sent.filter(x=>String(x.body.chat_id)===peer).map(x=>x.body.text),['Привет!','Что тебя так рассмешило?']);
+ const data=JSON.parse(modelRequests[1].body.messages[1].content);assert.equal(data.latest_peer_message,'Ахахах');assert.ok(data.history.some(x=>x.role==='assistant'&&x.text==='Привет!'));
+});
+test('unchanged greeting after repair is suppressed rather than sent or offered for approval',async()=>{
+ await enabled('auto');await putMessage(env,{id:'already-greeted',scope:cid,role:'assistant',body:'Привет!'});
+ models.push(peerReply('Привет.'),peerReply('Привет! Как дела?',true));await acceptUpdate(env,business(':_>'));await drain(env);
+ assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,0);assert.equal((await all(env,'SELECT * FROM proposals')).length,0);assert.equal(modelRequests.length,2);
+});
+test('literal hello in auto mode does not require approval even if classifier is overcautious',async()=>{
+ await enabled('auto');models.push(peerReply('Привет!',true));await acceptUpdate(env,business('Привет'));await drain(env);
+ assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,1);assert.equal((await all(env,'SELECT * FROM proposals')).length,0);
+});
+test('hello plus commitment still requires owner approval',async()=>{
+ await enabled('auto');models.push(peerReply('Привет! Завтра оплачу.',true));await acceptUpdate(env,business('Привет'));await drain(env);
+ assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,0);assert.equal((await all(env,'SELECT * FROM proposals')).length,1);
+});
+test('fourth different ordinary answer remains automatic; rate limit never turns into a draft',async()=>{
+ await enabled('auto');
+ for(let i=0;i<8;i++){models.push(peerReply('Ответ номер '+i));await acceptUpdate(env,business('Вопрос номер '+i));await drain(env);}
+ assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,6);assert.equal((await all(env,'SELECT * FROM proposals')).length,0);
+ assert.equal(sent.filter(x=>x.body.text?.includes('после 6 автоответов')).length,1);
+ now+=61000;models.push(peerReply('Теперь можно продолжить'));await acceptUpdate(env,business('Продолжим?'));await drain(env);
+ assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,7);
+});
+test('same message ID under a different update ID is not answered twice',async()=>{
+ await enabled('auto');models.push(peerReply('Привет!'));const u=business('Привет');await acceptUpdate(env,u);await drain(env);await acceptUpdate(env,{...u,update_id:++seq});await drain(env);
+ assert.equal(modelRequests.length,1);assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,1);
+});
+test('edited incoming updates context without another automatic answer',async()=>{
+ await enabled('auto');models.push(peerReply('Понял'));const u=business('Первая версия');await acceptUpdate(env,u);await drain(env);
+ await acceptUpdate(env,{update_id:++seq,edited_business_message:{...u.business_message,text:'Исправленная версия'}});await drain(env);
+ assert.equal(modelRequests.length,1);assert.equal((await one(env,'SELECT body FROM messages WHERE id=?',[cid+':'+u.business_message.message_id])).body,'Исправленная версия');
+});
+test('reply to unprocessed voice carries an explicit missing-content hint',async()=>{
+ await enabled();models.push(peerReply('Можешь написать текстом?'));await acceptUpdate(env,business('А я тебя нет',peer,{reply_to_message:{voice:{file_id:'do-not-download'}}}));await drain(env);
+ assert.ok(JSON.parse(modelRequests[0].body.messages[1].content).latest_peer_message.includes('содержимое не распознано'));assert.ok(!sent.some(x=>x.method==='getFile'));
+});
+test('send guard cancels an already queued automatic duplicate after an earlier confirmed answer',async()=>{
+ await enabled('auto');const c=await one(env,'SELECT * FROM chats');await putMessage(env,{id:'earlier',scope:cid,role:'assistant',body:'Привет!'});await queue(env,'duplicate','Привет.',{scope:cid,mode:'auto',revision:c.revision});await flush(env,Date.now()+20000);
+ assert.equal((await one(env,"SELECT state FROM outbox WHERE id='duplicate'")).state,'cancelled');assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,0);
+});
+test('repeat guard is scoped to current chat and recognizes punctuation variants',async()=>{
+ assert.ok(repeatedReply('ПРИВЕТ!!!',['Привет.']));assert.ok(!repeatedReply('Как ты?',['Привет!']));
+ await enabled('auto');await putMessage(env,{id:'other-greeting',scope:'other',role:'assistant',body:'Привет!'});models.push(peerReply());await acceptUpdate(env,business('Привет'));await drain(env);assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,1);
+});
 test('sensitive generated reply stays a draft in auto mode',async()=>{await enabled('auto');models.push(peerReply('Давай уточним условия.',true));await acceptUpdate(env,business('Можешь обещать оплатить?'));await drain(env);assert.equal(sent.filter(s=>String(s.body.chat_id)===peer).length,0);assert.equal((await one(env,'SELECT count(*) AS n FROM proposals')).n,1);});
 test('malformed peer response fails closed',async()=>{await enabled('auto');models.push({role:'assistant',content:'Я перевёл деньги.'});await acceptUpdate(env,business('Привет'));await drain(env);assert.equal(sent.filter(s=>String(s.body.chat_id)===peer).length,0);assert.equal(parsePeer('{"reply":"yes"}'),null);});
 test('new peer message arriving during generation invalidates earlier draft',async()=>{await enabled('auto');models.push(async()=>{await acceptUpdate(env,business('Нет, уже не надо'));return response({choices:[{message:peerReply('Устаревший ответ')}]});},peerReply('Понял.'));await acceptUpdate(env,business('Первое'));await drain(env);assert.ok(!sent.some(s=>s.body.text==='Устаревший ответ'));assert.equal(sent.filter(s=>String(s.body.chat_id)===peer).length,1);});

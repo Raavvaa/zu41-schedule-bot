@@ -1,7 +1,8 @@
-import {one,all,run,batch,key,clock,OWNER,getChat,putMessage,queue,stop,maintenance,audit,createProposal} from './store.mjs';
+import {one,all,run,batch,key,clock,OWNER,getChat,putMessage,queue,stop,maintenance,audit,createProposal,recentReplies} from './store.mjs';
 import {ownerTurn,peerTurn,proposalCard} from './agent.mjs';
 import {completion} from './providers.mjs';
 import {telegram,setAvatar} from './telegram.mjs';
+import {repeatedReply} from './dialogue.mjs';
 
 export const prefix=text=>/^панда(?:[\s,!:]|$)/iu.test(text);
 const strip=text=>text.replace(/^панда[\s,!:]*/iu,'').trim();
@@ -77,15 +78,19 @@ export async function acceptUpdate(env,u){
    event={id,scope:OWNER,type:'owner',text:command,target:scope};
   }else{
    const c=await getChat(env,scope);
+   const messageId=scope+':'+m.message_id;
+   if(!u.edited_business_message&&await one(env,'SELECT id FROM messages WHERE id=?',[messageId]))return;
    // No third-party text retained or sent to LLM before per-chat opt-in.
    if(isOwner)await run(env,'UPDATE chats SET last_manual=?,pause_until=?,revision=revision+1 WHERE id=?',[now,now+600000,scope]);
    else await run(env,'UPDATE chats SET last_incoming=?,revision=revision+1 WHERE id=?',[now,scope]);
    if(!c.consent||c.mode==='off'||c.until_at<=now)return;
    if(!text||m.voice||m.audio||m.video_note){if(!isOwner)await queue(env,'media:'+id,'В чате «'+c.title+'» пришло сообщение без текста. Я его не анализировала.');return;}
-   const messageId=scope+':'+m.message_id;
    if(u.edited_business_message)await run(env,'DELETE FROM messages WHERE id=?',[messageId]);
-   await putMessage(env,{id:messageId,scope,role:isOwner?'assistant':'user',body:text,manual:isOwner?1:0});
-   if(isOwner)return;
+   const quoted=m.reply_to_message,quoteText=quoted?.text??quoted?.caption;
+   const replyContext=!isOwner&&quoted?(quoteText?'\n[Ответ на цитату: '+String(quoteText).slice(0,500)+']':quoted.voice||quoted.audio?'\n[Ответ на голосовое: содержимое не распознано]':''):'';
+   await putMessage(env,{id:messageId,scope,role:isOwner?'assistant':'user',body:text+replyContext,manual:isOwner?1:0});
+   // An edit corrects context and invalidates old drafts, but is not a new turn.
+   if(isOwner||u.edited_business_message)return;
    event={id,scope,type:'peer'};
   }
  }else if(u.message){
@@ -185,6 +190,7 @@ export async function flush(env,deadline){
  for(let i=0;i<10&&Date.now()<deadline-1500;i++){
   const row=await one(env,"SELECT * FROM outbox WHERE state='pending' AND not_before<=? ORDER BY at,rowid LIMIT 1",[clock(env)]);if(!row)return;
   if(!await canSend(env,row)){await run(env,"UPDATE outbox SET state='cancelled' WHERE id=? AND state='pending'",[row.id]);if(row.mode==='approved'||row.mode==='avatar')await queue(env,'cancelled:'+row.id,'Не отправила: предложение устарело, отключено подключение или истекло разрешённое окно ответа.');continue;}
+  if(row.mode==='auto'&&repeatedReply(JSON.parse(row.payload).text,await recentReplies(env,row.scope,row.id))){await run(env,"UPDATE outbox SET state='cancelled' WHERE id=? AND state='pending'",[row.id]);await audit(env,'repeated_send_blocked');continue;}
   const claimed=await run(env,"UPDATE outbox SET state='sending',lease_until=? WHERE id=? AND state='pending'",[clock(env)+25000,row.id]);if(!claimed.meta.changes)continue;
   // Recheck after claiming: stop/manual reply/new peer messages invalidate it.
   if(!await canSend(env,row)){await run(env,"UPDATE outbox SET state='cancelled' WHERE id=?",[row.id]);continue;}

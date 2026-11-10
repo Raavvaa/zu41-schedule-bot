@@ -7,6 +7,14 @@ export const OWNER='owner';
 export async function key(value){const x=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value));return [...new Uint8Array(x)].slice(0,12).map(n=>n.toString(16).padStart(2,'0')).join('');}
 export const audit=(env,kind)=>run(env,'INSERT INTO audit(kind,at) VALUES(?,?)',[kind,clock(env)]);
 export const getChat=(env,id)=>one(env,'SELECT * FROM chats WHERE id=?',[id]);
+export async function recentReplies(env,scope,excludeId=''){
+ const since=clock(env)-30*60000;
+ const [messages,outbox]=await Promise.all([
+  all(env,"SELECT body FROM messages WHERE scope=? AND role='assistant' AND at>? ORDER BY at DESC,rowid DESC LIMIT 12",[scope,since]),
+  all(env,"SELECT json_extract(payload,'$.text') AS body FROM outbox WHERE scope=? AND id<>? AND mode<>'owner' AND method='sendMessage' AND state IN ('pending','sending','sent','unknown') AND at>? ORDER BY at DESC,rowid DESC LIMIT 12",[scope,excludeId,since])
+ ]);
+ return [...messages,...outbox].map(x=>x.body).filter(Boolean);
+}
 export async function context(env,scope){
  const now=clock(env);
  const [history,facts,chat]=await Promise.all([
