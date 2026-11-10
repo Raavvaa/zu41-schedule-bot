@@ -1,7 +1,7 @@
 import {background} from './background.mjs';
 import {one,all,run,batch,key,clock,OWNER,getChat,putMessage,queue,stop,maintenance,audit,createProposal,recentReplies,budgets,snapshotChat} from './store.mjs';
 import {ownerTurn,peerTurn,proposalCard} from './agent.mjs';
-import {completion,diagnostic} from './providers.mjs';
+import {completion,diagnostic,providerConfig} from './providers.mjs';
 import {telegram,setAvatar} from './telegram.mjs';
 import {repeatedReply} from './dialogue.mjs';
 
@@ -10,7 +10,9 @@ const strip=text=>text.replace(/^панда[\s,!:]*/iu,'').trim();
 const helpHere=text=>/^(?:помогай|помоги|работай|включись)\s+здесь[.!\s]*$/iu.test(text.trim());
 export const autoHere=text=>/^(?:отвечай(?:\s+на\s+все\s+сообщения)?|(?:включи|возобнови)\s+автоответы?|продолжай\s+отвечать)(?:\s+(?:здесь|в\s+этом\s+чате|этого\s+чата))?[.!\s]*$/iu.test(text.trim());
 const slash=text=>text.trim().match(/^\/([\p{L}\w]+)(?:@\w+)?(?:\s+([\s\S]*))?$/u)?.[1]?.toLowerCase();
-export const stopCommand=text=>/^(?:\/stop(?:@\w+)?|стоп|остановись|останови всё|останови все|выключись)[.!\s]*$/iu.test(text.trim());
+export const stopAllCommand=text=>/^(?:выключи|отключи|останови)\s+(?:автоответ(?:ы|чик)?|ответы)(?:\s+(?:во?|на)\s+всех\s+чатах)[.!\s]*$/iu.test(text.trim());
+export const peerDelay=env=>Math.min(12000,Math.max(0,Number(env.PEER_DEBOUNCE_MS ?? 4000)||0));
+export const stopCommand=text=>stopAllCommand(text)||/^(?:\/stop(?:@\w+)?|стоп|остановись|останови всё|останови все|выключись)[.!\s]*$/iu.test(text.trim());
 const startText='Я Панда 🐼 Можно просто поговорить, попросить запомнить важное или поручить дело.\n\nЧтобы я помогала в твоих личных чатах: включи Secretary/Business Mode у этого бота в @BotFather → Bot Settings, затем Telegram → Настройки → Изменить → Автоматизация чатов → выбери меня и нужные чаты. После подключения напиши в нужном чате «панда, помогай здесь» или открой /chats.\n\nСначала покажу черновики тебе. Автоответ включается отдельно и на время. «панда, стоп» или /stop останавливает ответы. Голосовые не обрабатываю.\n/status — состояние, /memory — память, /chats — подключённые чаты.';
 
 async function chatButtons(env,eventId){
@@ -20,7 +22,7 @@ async function chatButtons(env,eventId){
 }
 async function status(env,eventId){
  const now=clock(env),day=new Date(now).toISOString().slice(0,10),[chats,usage,uncertain,s,connections]=await Promise.all([all(env,'SELECT title,mode,until_at FROM chats'),one(env,'SELECT * FROM usage WHERE day=?',[day]),one(env,"SELECT count(*) AS n FROM outbox WHERE state='unknown'"),one(env,'SELECT paused FROM settings WHERE id=1'),one(env,'SELECT count(*) AS n FROM connections WHERE enabled=1')]);
- await queue(env,'reply:'+eventId,`Панда работает. ${s.paused?'Автоответы остановлены.':''}\n${connections.n?'Профиль подключён.':'Сервер ещё не получил подключение профиля.'}\n${chats.map(c=>`${c.title}: ${c.mode==='off'||c.until_at<=now?'выключено':c.mode==='auto'?'автоответ':'черновики'}`).join('\n')||'Сообщения выбранных чатов пока не поступили.'}\nОбращений к моделям сегодня: ${(await budgets(env)).map(b=>b.provider+': остаток '+b.requests+' запросов / '+b.tokens+' токенов').join('; ')}.\nОтправок с неизвестным результатом: ${uncertain.n}.`);
+ await queue(env,'reply:'+eventId,`Панда работает. ${s.paused?'Автоответы остановлены.':''}\n${connections.n?'Профиль подключён.':'Сервер ещё не получил подключение профиля.'}\n${chats.map(c=>`${c.title}: ${c.mode==='off'||c.until_at<=now?'выключено':c.mode==='auto'?'автоответ':'черновики'}`).join('\n')||'Сообщения выбранных чатов пока не поступили.'}\nОбращений к моделям сегодня: ${(await budgets(env)).filter(b=>providerConfig(env).some(p=>p.key&&p.name===b.provider)).map(b=>b.provider+': остаток '+b.requests+' запросов / '+b.tokens+' токенов').join('; ')}.\nОтправок с неизвестным результатом: ${uncertain.n}.`);
 }
 async function enableAutoHere(env,scope){
  const c=await getChat(env,scope);
@@ -90,7 +92,7 @@ export async function acceptUpdate(env,u){
   await run(env,'INSERT INTO chats(id,connection_id,telegram_id,title) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title',[scope,m.business_connection_id,String(m.chat.id),[m.chat.first_name,m.chat.last_name].filter(Boolean).join(' ')||m.chat.username||'Личный чат']);
   if(m.chat.username)await run(env,'INSERT OR IGNORE INTO chat_aliases(chat_id,alias) VALUES(?,?)',[scope,String(m.chat.username).toLowerCase()]);
   if(isOwner&&prefix(text)&&!u.edited_business_message){
-   const command=strip(text);if(stopCommand(command))await stop(env,scope);
+   const command=strip(text);if(stopCommand(command))await stop(env,stopAllCommand(command)?null:scope);
    // Explicit local activation is applied at ingestion, just like stop. The
    // queued receipt must never reactivate the chat after a later stop command.
    event=autoHere(command)?{id,scope:OWNER,type:'notice',text:await enableAutoHere(env,scope),target:scope}:{id,scope:OWNER,type:'owner',text:command,target:scope};
@@ -110,8 +112,9 @@ export async function acceptUpdate(env,u){
    const replyContext=!isOwner&&quoted?(quoteText?'\n[Ответ на цитату: '+String(quoteText).slice(0,500)+']':quoted.voice||quoted.audio?'\n[Ответ на голосовое: содержимое не распознано]':''):'';
    await putMessage(env,{id:messageId,scope,role:isOwner?'assistant':'user',body:text+replyContext,manual:isOwner?1:0});
    // An edit corrects context and invalidates old drafts, but is not a new turn.
-   if(isOwner||u.edited_business_message)return;
-   event={id,scope,type:'peer'};
+   if(isOwner){await run(env,"UPDATE inbox SET state='done',payload='{}' WHERE scope=? AND state='pending' AND json_extract(payload,'$.type')='peer'",[scope]);return;}
+   if(u.edited_business_message)return;
+   event={id,scope,type:'peer',message_id:messageId};
   }
  }else if(u.message){
   const m=u.message;if(String(m.from?.id)!==owner||String(m.chat?.id)!==owner||m.chat?.type!=='private')return;
@@ -122,7 +125,13 @@ export async function acceptUpdate(env,u){
   if(stopCommand(event.text||''))await stop(env);
  }
  if(!event)return;
- await run(env,'INSERT OR IGNORE INTO inbox(id,scope,payload,at) VALUES(?,?,?,?)',[id,event.scope,JSON.stringify(event),now]);
+ if(event.type==='peer'){
+  const due=now+peerDelay(env);
+  await batch(env,[
+   ["UPDATE inbox SET not_before=MAX(not_before,?) WHERE scope=? AND state='pending' AND json_extract(payload,'$.type')='peer'",[due,event.scope]],
+   ['INSERT OR IGNORE INTO inbox(id,scope,payload,at,not_before) VALUES(?,?,?,?,?)',[id,event.scope,JSON.stringify(event),now,due]]
+  ]);
+ }else await run(env,'INSERT OR IGNORE INTO inbox(id,scope,payload,at) VALUES(?,?,?,?)',[id,event.scope,JSON.stringify(event),now]);
 }
 
 async function applyProposal(env,event,p){
@@ -150,7 +159,7 @@ async function applyProposal(env,event,p){
 async function callback(env,event){
  const [op,id]=event.data.split(':');let text='Неизвестная кнопка.';
  if(op==='chat'){
-  const c=await getChat(env,id);if(c){await queue(env,'reply:'+event.id,`${c.title}\nРежим: ${c.mode}.\nКод чата для импорта: ${c.id}\nПри включении текст чата обрабатывается Groq/SiliconFlow/OpenRouter; нужно согласие участников.`,{markup:{inline_keyboard:c.kind==='channel'?[]:[[{text:'📝 Черновики на 2 ч',callback_data:'draft:'+c.id},{text:'🤖 Авто на 2 ч',callback_data:'auto:'+c.id}],[{text:'⏹ Стоп',callback_data:'stop:'+c.id}]]}});return;}
+  const c=await getChat(env,id);if(c){await queue(env,'reply:'+event.id,`${c.title}\nРежим: ${c.mode}.\nКод чата для импорта: ${c.id}\nПри включении текст чата обрабатывается ${env.FREE_ONLY==='true'?'Groq/OpenRouter (бесплатные модели)':'Groq/SiliconFlow/OpenRouter'}; нужно согласие участников.`,{markup:{inline_keyboard:c.kind==='channel'?[]:[[{text:'📝 Черновики на 2 ч',callback_data:'draft:'+c.id},{text:'🤖 Авто на 2 ч',callback_data:'auto:'+c.id}],[{text:'⏹ Стоп',callback_data:'stop:'+c.id}]]}});return;}
  }else if(['draft','auto'].includes(op)){const c=await getChat(env,id);if(c){text=await proposalCard(env,event,id,'mode',{mode:op,minutes:120,instruction:'Коротко и естественно. Новые обещания, неизвестные факты и чувствительные темы согласовывать со мной.'});}}
  else if(op==='yes')text=await applyProposal(env,event,await one(env,'SELECT * FROM proposals WHERE id=?',[id]));
  else if(op==='no'){await run(env,"UPDATE proposals SET status='cancelled' WHERE id=? AND status='pending'",[id]);text='Отменено.';}
@@ -243,7 +252,11 @@ export async function drain(env,deadline=Date.now()+24000){
    let event=JSON.parse(row.payload),group=[row];
    if(event.type==='peer'){
     group=(await all(env,"SELECT * FROM inbox WHERE state='pending' AND scope=? ORDER BY at,rowid LIMIT 100",[row.scope])).filter(x=>JSON.parse(x.payload).type==='peer');
-    event=JSON.parse(group.at(-1).payload);
+    if(!group.length)continue;
+    // A concurrent webhook may have extended the quiet window after selection.
+    const due=Math.max(...group.map(x=>x.not_before));
+    if(due>clock(env)){await run(env,"UPDATE inbox SET not_before=MAX(not_before,?) WHERE scope=? AND state='pending' AND json_extract(payload,'$.type')='peer'",[due,row.scope]);continue;}
+    event={...JSON.parse(group.at(-1).payload),message_ids:group.map(x=>JSON.parse(x.payload).message_id).filter(Boolean)};
    }
    await batch(env,group.map(x=>["UPDATE inbox SET state='processing',lease_until=?,attempts=attempts+1 WHERE id=? AND state='pending'",[clock(env)+28000,x.id]]));
    const finish=()=>batch(env,group.map(x=>["UPDATE inbox SET state='done',payload='{}' WHERE id=?",[x.id]]));
@@ -259,11 +272,26 @@ export async function drain(env,deadline=Date.now()+24000){
  // A concurrent webhook can have queued work while this worker owned the lock.
  if(Date.now()<deadline-4000&&await one(env,"SELECT id FROM inbox WHERE state='pending' AND not_before<=? LIMIT 1",[clock(env)]))return drain(env,deadline);
 }
-async function work(env){const deadline=Date.now()+28000;try{await drain(env,Math.min(deadline,Date.now()+22000));await background(env,deadline);}catch{}}
+export async function work(env){
+ const deadline=Date.now()+28000;
+ try{
+  // D1 owns the queue; overlapping webhooks only wake it. The lock serializes
+  // generation. A timer stays within waitUntil's lifetime; cron recovers crashes.
+  while(Date.now()<deadline-4000){
+   await drain(env,Math.min(deadline-1000,Date.now()+22000));
+   const next=await one(env,"SELECT MIN(not_before) AS due FROM inbox WHERE state='pending'");
+   if(next?.due==null)break;
+   const delay=Math.max(250,next.due-clock(env));
+   if(Date.now()+delay>=deadline-4000)break;
+   await (env.SLEEP||((ms)=>new Promise(resolve=>setTimeout(resolve,ms))))(delay);
+  }
+  await background(env,deadline);
+ }catch{await audit(env,'worker_failed').catch(()=>{});}
+}
 export default {
  async fetch(request,env,ctx){
   const url=new URL(request.url);
-  if(url.pathname==='/health')return Response.json({ok:true,service:'panda',version:env.SOURCE_SHA||'development',enabled:env.ENABLED==='true',providers:[env.SILICONFLOW_API_KEY?'siliconflow':null,env.GROQ_API_KEY?'groq':null,env.OPENROUTER_API_KEY?'openrouter':null].filter(Boolean),auto_default:false});
+  if(url.pathname==='/health')return Response.json({ok:true,service:'panda',version:env.SOURCE_SHA||'development',enabled:env.ENABLED==='true',providers:providerConfig(env).filter(p=>p.key).map(p=>p.name),free_only:env.FREE_ONLY==='true',peer_debounce_ms:peerDelay(env),auto_default:false});
   if(env.ENABLED!=='true')return new Response('disabled',{status:503});
   if(url.pathname==='/ops/probe'&&request.method==='POST'){
    if(!env.ADMIN_SECRET||request.headers.get('authorization')!=='Bearer '+env.ADMIN_SECRET)return new Response('forbidden',{status:403});

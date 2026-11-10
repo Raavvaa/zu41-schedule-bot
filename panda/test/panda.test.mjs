@@ -2,7 +2,7 @@ import test,{before,after,beforeEach} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile,readdir} from 'node:fs/promises';
 import {Miniflare} from 'miniflare';
-import worker,{acceptUpdate,drain,flush,canSend,prefix,stopCommand,autoHere} from '../src/index.mjs';
+import worker,{acceptUpdate,drain,flush,canSend,prefix,stopCommand,autoHere,work} from '../src/index.mjs';
 import {one,all,run,context,putFact,putMessage,createProposal,queue,stop,maintenance,key} from '../src/store.mjs';
 import {ownerTurn,peerTurn,parsePeer} from '../src/agent.mjs';
 import {completion} from '../src/providers.mjs';
@@ -23,6 +23,8 @@ before(async()=>{mf=new Miniflare({modules:true,script:'export default {fetch(){
 after(async()=>mf.dispose());
 beforeEach(async()=>{
  now=1800000000000;seq=0;sent=[];models=[];modelRequests=[];
+ // Legacy behavior fixtures bypass waiting; dedicated queue tests use 4000ms.
+ env.PEER_DEBOUNCE_MS='0';delete env.FREE_ONLY;delete env.SLEEP;
  for(const table of ['connections','chats','messages','facts','inbox','proposals','outbox','usage','provider_usage','chat_style','chat_changes','chat_facts','background_jobs','fact_extraction','conversation_state','chat_aliases','providers','audit'])await run(env,'DELETE FROM '+table);
  await run(env,'UPDATE settings SET paused=0,lock_token=NULL,lock_until=0,cleanup_at=0');env.NOW=()=>now;
  env.FETCH=async(url,options={})=>{
@@ -280,3 +282,63 @@ test('35-turn topic change delivers newest topic and trims old content in owner 
 test('owner memory normalizes model capitalization by taking the original source quote',async()=>{models.push(tool('route',{action:'remember',params:{scope:'owner',key:'preference',fact:'Предпочитаю чай.'},confidence:'high',explanation:'Запомнить'}));await ownerTurn(env,{id:'capital',text:'Запомни: я предпочитаю чай.'},Date.now()+20000);assert.equal((await one(env,"SELECT value FROM facts WHERE key='preference'")).value,'предпочитаю чай.');});
 
 test('JSON fallback removes native tool fields from prior conversation messages',async()=>{models.push(response({},503),{role:'assistant',content:JSON.stringify({name:'respond',arguments:{text:'Готово',claims_action:false}})});await completion(env,[tool('search_memory',{scope:'owner',query:'чай'}),{role:'tool',tool_call_id:'tool-fixture',content:'{}'}],{tools:(await import('../src/agent.mjs')).TOOLS});const body=modelRequests.at(-1).body;assert.equal(body.tools,undefined);assert.ok(body.messages.every(m=>!m.tool_calls&&m.role!=='tool'));});
+
+test('quiet window restarts for every peer message and sends one combined response',async()=>{
+ await enabled('auto');env.PEER_DEBOUNCE_MS='4000';
+ await acceptUpdate(env,business('Привет'));await drain(env);assert.equal(modelRequests.length,0);
+ now+=2000;await acceptUpdate(env,business('Как дела?'));now+=2000;await acceptUpdate(env,business('Что делаешь?'));
+ now+=3999;await drain(env);assert.equal(modelRequests.length,0);
+ now++;models.push(peerReply('Привет! Я на связи.'));await drain(env);
+ assert.equal(modelRequests.length,1);assert.equal(sent.filter(s=>String(s.body.chat_id)===peer).length,1);
+ assert.deepEqual(JSON.parse(modelRequests[0].body.messages[1].content).latest_peer_messages,['Привет','Как дела?','Что делаешь?']);
+});
+test('webhook worker wakes delayed queue without needing a cron tick',async()=>{
+ await enabled('auto');delete env.PEER_DEBOUNCE_MS;const waits=[];
+ env.SLEEP=async ms=>{waits.push(ms);now+=ms;};models.push(peerReply('Привет!'));
+ await acceptUpdate(env,business('Привет'));await work(env);
+ assert.deepEqual(waits,[4000]);assert.equal(modelRequests.length,1);assert.equal(sent.filter(s=>String(s.body.chat_id)===peer).length,1);
+});
+test('message arriving during generation invalidates old answer and is picked up after quiet window',async()=>{
+ await enabled('auto');env.PEER_DEBOUNCE_MS='4000';env.SLEEP=async ms=>{now+=ms;};
+ models.push(async()=>{now+=500;await acceptUpdate(env,business('И ещё вопрос'));return response({choices:[{message:peerReply('Устаревший ответ')}],usage:{total_tokens:25}});},peerReply('Отвечаю на оба вопроса.'));
+ await acceptUpdate(env,business('Первый вопрос'));await work(env);
+ assert.equal(modelRequests.length,2);
+ const replies=sent.filter(s=>String(s.body.chat_id)===peer);assert.equal(replies.length,1);assert.equal(replies[0].body.text,'Отвечаю на оба вопроса.');
+ assert.ok(modelRequests[1].body.messages[1].content.includes('Первый вопрос'));assert.ok(modelRequests[1].body.messages[1].content.includes('И ещё вопрос'));
+ assert.equal((await one(env,"SELECT count(*) AS n FROM inbox WHERE state='pending'")).n,0);
+});
+test('quiet timers of two chats do not postpone each other',async()=>{
+ await enabled('auto');env.PEER_DEBOUNCE_MS='4000';
+ const other=business('Второй чат');other.business_message.chat.id=303;other.business_message.from.id=303;
+ await acceptUpdate(env,other);const otherId=await key(connection+':303');await run(env,"UPDATE chats SET mode='auto',consent=1,until_at=? WHERE id=?",[now+7200000,otherId]);
+ await acceptUpdate(env,business('Первый чат'));now+=2000;
+ const second=business('Только второй');second.business_message.chat.id=303;second.business_message.from.id=303;await acceptUpdate(env,second);
+ now+=2000;models.push(peerReply('Ответ первому'));await drain(env);assert.equal(modelRequests.length,1);assert.equal(sent.filter(s=>String(s.body.chat_id)==='303').length,0);
+ now+=2000;models.push(peerReply('Ответ второму'));await drain(env);assert.equal(modelRequests.length,2);assert.equal(sent.filter(s=>String(s.body.chat_id)==='303').length,1);
+});
+test('owner manual answer during quiet window consumes queued turn without an extra bot reply',async()=>{
+ await enabled('auto');env.PEER_DEBOUNCE_MS='4000';await acceptUpdate(env,business('Привет'));now+=1000;await acceptUpdate(env,business('Привет, отвечу сам',owner));now+=4000;await drain(env);assert.equal(modelRequests.length,0);
+});
+test('global natural stop is immediate with exhausted models and held lock',async()=>{
+ await enabled('auto');env.PEER_DEBOUNCE_MS='4000';await acceptUpdate(env,business('Привет'));await run(env,'UPDATE settings SET lock_until=?',[now+60000]);
+ await acceptUpdate(env,privateUpdate('панда выключи автоответчик на всех чатах'));
+ assert.equal((await one(env,'SELECT paused FROM settings')).paused,1);assert.equal((await one(env,'SELECT mode FROM chats')).mode,'off');
+ await run(env,'UPDATE settings SET lock_until=0');now+=4000;await drain(env);assert.equal(modelRequests.length,0);
+ assert.ok(sent.some(x=>x.body.text?.includes('Остановила автоответы')));
+});
+test('peer cannot invoke the new global stop phrase',async()=>{
+ await enabled('auto');env.PEER_DEBOUNCE_MS='4000';await acceptUpdate(env,business('панда выключи автоответчик на всех чатах'));assert.equal((await one(env,'SELECT paused FROM settings')).paused,0);assert.equal((await one(env,'SELECT mode FROM chats')).mode,'auto');
+});
+test('free-only routing skips SiliconFlow even when a secret exists',async()=>{
+ env.FREE_ONLY='true';env.SILICONFLOW_API_KEY='fixture-silicon';try{
+ models.push(response({},429),reply('Резерв'));const r=await completion(env,[]);assert.equal(r.provider,'openrouter');assert.equal(modelRequests.length,2);assert.ok(modelRequests.every(r=>!r.url.includes('siliconflow')));
+ }finally{delete env.SILICONFLOW_API_KEY;}
+});
+test('free-only mode blocks paid OpenRouter names and all background or embedding calls',async()=>{
+ env.FREE_ONLY='true';env.SILICONFLOW_API_KEY='fixture-silicon';env.OPENROUTER_MODEL='paid-model';try{
+ const {background}=await import('../src/background.mjs'),{embedding}=await import('../src/providers.mjs');
+ await enabled('auto');for(let i=0;i<5;i++)await putMessage(env,{id:'free-bg'+i,scope:cid,role:'user',body:'Люблю чай'});
+ await background(env);assert.equal(await embedding(env,'чай'),null);assert.equal(modelRequests.length,0);
+ models.push(response({},429));await assert.rejects(completion(env,[]));assert.equal(modelRequests.length,1);assert.ok(modelRequests[0].url.includes('groq'));
+ }finally{delete env.SILICONFLOW_API_KEY;delete env.OPENROUTER_MODEL;}
+});

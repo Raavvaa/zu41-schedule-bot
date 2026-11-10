@@ -23,7 +23,9 @@
     "OPENROUTER_DAILY_REQUESTS": "100",
     "SILICONFLOW_BASE_URL": "https://api.siliconflow.com/v1",
     "SILICONFLOW_CHAT_MODEL": "Qwen/Qwen2.5-7B-Instruct",
-    "SILICONFLOW_EMBED_MODEL": "Qwen/Qwen3-Embedding-0.6B"
+    "SILICONFLOW_EMBED_MODEL": "Qwen/Qwen3-Embedding-0.6B",
+    "FREE_ONLY": "true",
+    "PEER_DEBOUNCE_MS": "4000"
   },
   "d1_databases": [
     {

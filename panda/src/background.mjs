@@ -1,7 +1,7 @@
 import {one,all,run,clock,chatContext,saveExtractedFact,audit,saveConversationState,enqueueBackground} from './store.mjs';
 import {completion,parseJSON,embedding} from './providers.mjs';
 export async function background(env,deadline=Date.now()+20000){
- if(!env.SILICONFLOW_API_KEY)return;
+ if(env.FREE_ONLY==='true'||!env.SILICONFLOW_API_KEY)return;
  for(let i=0;i<3&&Date.now()<deadline-5000;i++){
  const now=clock(env),job=await one(env,"SELECT * FROM background_jobs WHERE not_before<=? AND (state='pending' OR lease_until<?) ORDER BY not_before LIMIT 1",[now,now]);if(!job)return;
  const claim=await run(env,"UPDATE background_jobs SET state='running',lease_until=? WHERE chat_id=? AND kind=? AND version=? AND (state='pending' OR lease_until<?)",[now+30000,job.chat_id,job.kind,job.version,now]);if(!claim.meta.changes)continue;
