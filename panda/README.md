@@ -100,8 +100,7 @@ curl -s -H "Authorization: Bearer $SILICONFLOW_API_KEY" https://api.siliconflow.
 
 ### Бесплатный режим и сбор коротких сообщений
 
-Production: `FREE_ONLY=true`, `PEER_DEBOUNCE_MS=4000`. Основной провайдер — Groq
-GPT-OSS-20B; резерв — только `openrouter/free` или явно выбранная `:free` модель.
+Production использует `FREE_ONLY=true` и `PEER_DEBOUNCE_MS=4000`. Порядок провайдеров: NVIDIA Bolt → Cloudflare Workers AI → Groq GPT-OSS-20B → OpenRouter Free.
 SiliconFlow полностью исключён из запросов, включая эмбеддинги и фоновые задачи,
 даже если его секрет сохранён в Worker. Ручная память, стиль, история и резюме из
 основного ответа остаются; фоновое извлечение фактов/состояния приостановлено.
@@ -130,7 +129,7 @@ Webhook будит обработчик через `waitUntil`; cron восст�
 
 ## Workers AI (бесплатная цепочка)
 
-Workers AI → Groq → OpenRouter Free. Binding `AI`, без нового API-ключа.
+Workers AI занимает второй слот после NVIDIA. Binding `AI` работает без отдельного API-ключа.
 Модель: `@cf/meta/llama-3.3-70b-instruct-fp8-fast`; другие модели требуют проверки перед добавлением в разрешённый список. Таймаут `WORKERS_AI_TIMEOUT_MS=4500`.
 `WORKERS_AI_ENABLED=false` отключает канал. Внутренние ограничения `CLOUDFLARE_DAILY_TOKENS=200000`, `CLOUDFLARE_DAILY_REQUESTS=500` не являются квотой провайдера. Реальная бесплатная квота Cloudflare — 10000 нейронов на аккаунт в сутки; это не токены и не сообщения. На Workers Free после исчерпания запросы отклоняются. Платный план не включаем.
 https://developers.cloudflare.com/workers-ai/platform/pricing/
@@ -157,4 +156,4 @@ Provider deadline and response safeguards:
 
 С `NVIDIA_ENABLED=true` и секретом Worker `NVIDIA_API` порядок в бесплатной конфигурации будет NVIDIA Bolt → Cloudflare Workers AI → Groq → OpenRouter Free. По умолчанию `NVIDIA_MODEL=nvidia/nemotron-3.5-bolt-e4b`. Для более естественных черновиков можно выбрать `google/gemma-4-31b-it` в том же слоте. NVIDIA использует таймаут 3 секунды и отдельные внутренние дневные лимиты `NVIDIA_DAILY_REQUESTS` (250) и `NVIDIA_DAILY_TOKENS` (100000). Ключ задаётся секретом, который не нужно повторно вводить при деплое.
 
-По умолчанию `NVIDIA_ENABLED=false`. Бесплатный Developer Program доступ NVIDIA предназначен для тестов и прототипов. Перед включением на реальном трафике проверьте право использования NVIDIA NIM в production. Закрытый `POST /ops/probe?provider=nvidia` запускает только вымышленную задачу, даже при выключенном NVIDIA в рабочей цепочке, и возвращает статус и время без текста ответа.
+В конфигурации Панды задано `NVIDIA_ENABLED=true`. Переменная `NVIDIA_ENABLED=false` отключает этот слот. Бесплатный Developer Program доступ NVIDIA предназначен для тестов и прототипов. Перед включением на реальном трафике проверьте право использования NVIDIA NIM в production. Закрытый `POST /ops/probe?provider=nvidia` запускает только вымышленную задачу, даже при выключенном NVIDIA в рабочей цепочке, и возвращает статус и время без текста ответа.
