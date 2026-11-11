@@ -523,3 +523,58 @@ test('style phrasing distinguishes settings from quoted and one-off instructions
  assert.equal((await all(env,'SELECT * FROM proposals')).length,0);
  assert.equal(modelRequests.length,0);
 });
+
+for(const minutes of [120,720]){
+ test('confirmed '+minutes+' minute auto mode uses the same quiet window',async()=>{
+  await enabled('draft');
+  const p=await createProposal(env,'duration-'+minutes,cid,'mode',{mode:'auto',minutes,instruction:''});
+  await acceptUpdate(env,click('yes:'+p.id));
+  await drain(env);
+  assert.equal((await one(env,'SELECT until_at FROM chats WHERE id=?',[cid])).until_at,now+minutes*60000);
+  if(minutes===720)now+=121*60000;
+  env.PEER_DEBOUNCE_MS='4000';
+  const waits=[];
+  env.SLEEP=async ms=>{waits.push(ms);now+=ms;};
+  models.push(peerReply('Ответ после подтверждения.'));
+  await acceptUpdate(env,business('Как дела?'));
+  await work(env);
+  assert.deepEqual(waits,[4000]);
+  assert.equal(modelRequests.length,1);
+  assert.equal(sent.filter(s=>String(s.body.chat_id)===peer).length,1);
+ });
+}
+
+test('a short Telegram retry wakes the outbox without waiting for cron',async()=>{
+ await enabled('auto');
+ const chat=await one(env,'SELECT revision FROM chats WHERE id=?',[cid]);
+ await queue(env,'short-retry','Новый автоответ.',{scope:cid,mode:'auto',revision:chat.revision});
+ const originalFetch=env.FETCH;
+ const attempts=[],waits=[];
+ env.FETCH=async(url,options)=>{
+  if(url.endsWith('/sendMessage')&&String(JSON.parse(options.body).chat_id)===peer){
+   attempts.push(now);
+   if(attempts.length===1)return response({ok:false,error_code:429,parameters:{retry_after:3}},429);
+  }
+  return originalFetch(url,options);
+ };
+ env.SLEEP=async ms=>{waits.push(ms);now+=ms;};
+ await work(env);
+ assert.deepEqual(waits,[3000]);
+ assert.equal(attempts[1]-attempts[0],3000);
+ assert.equal((await one(env,"SELECT state FROM outbox WHERE id='short-retry'")).state,'sent');
+ assert.equal(sent.filter(s=>String(s.body.chat_id)===peer).length,1);
+});
+
+test('extending the same active mode to 720 minutes keeps an already queued reply',async()=>{
+ await enabled('auto');
+ const chat=await one(env,'SELECT revision,instruction FROM chats WHERE id=?',[cid]);
+ await queue(env,'ready-on-renewal','Ответ в очереди.',{scope:cid,mode:'auto',revision:chat.revision});
+ await run(env,"UPDATE outbox SET not_before=? WHERE id='ready-on-renewal'",[now+2000]);
+ const p=await createProposal(env,'extend-mode',cid,'mode',{mode:'auto',minutes:720,instruction:chat.instruction});
+ await acceptUpdate(env,click('yes:'+p.id));
+ await drain(env);
+ assert.equal((await one(env,'SELECT revision FROM chats WHERE id=?',[cid])).revision,chat.revision);
+ now+=2000;
+ await drain(env);
+ assert.equal((await one(env,"SELECT state FROM outbox WHERE id='ready-on-renewal'")).state,'sent');
+});

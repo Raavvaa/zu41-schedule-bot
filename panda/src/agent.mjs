@@ -1,7 +1,7 @@
 import {taskState,replyTask,badOwnerText,parseAutoCommand,parseStyleDirection,clearTask,saveTask} from './brain.mjs';
 import {executeRoute,routeSchema} from './router.mjs';
 import {all,one,run,key,clock,context,getChat,putFact,forget,createProposal,queue,OWNER,stop,audit,recentReplies,chatContext,resolveTarget,changeStyle} from './store.mjs';
-import {completion,parseJSON} from './providers.mjs';
+import {completion,parseJSON,providerNames} from './providers.mjs';
 import {basicGreeting,repeatedReply} from './dialogue.mjs';
 
 export const OWNER_SYSTEM=`Ты Панда, личный помощник владельца. Общайся тепло и естественно, коротко по-русски или на языке обращения. Ты умеешь разговаривать, рассуждать, помогать с текстами и выполнять поручения реализованными инструментами. У тебя нет сознания и доступа ко всему аккаунту. Не превращай обычный разговор, мнение, шутку или упоминание денег в действие. Не придумывай биографию, обещания и выполненные действия. Действие выполнено только при успешном результате инструмента; создание предложения ещё не отправка. Время владельца — Asia/Baku. Если адресат неоднозначен, задай один вопрос. Новые возможности не выдумывай: есть память, поиск накопленного текста, черновики/автоответы выбранным личным чатам, публикация в подключённый канал, смена фото с подтверждением. Голос не распознаём. История до подключения доступна только после импорта.
@@ -25,7 +25,7 @@ export async function proposalCard(env,event,scope,kind,payload){
  const p=await createProposal(env,event.id,scope,kind,payload),c=await getChat(env,scope);
  if(p.status!=='pending')return 'Это поручение уже обработано.';
  let text;
- if(kind==='mode')text=`Чат: ${c.title}\nРежим: ${payload.mode==='auto'?'автоответ':'черновики тебе'} на ${payload.minutes} мин.\n${payload.instruction||'Коротко и естественно; новые обязательства согласовывать.'}\n\nКонтекст этого чата будет обрабатываться ${env.FREE_ONLY==='true'?'Cloudflare Workers AI/Groq/OpenRouter (бесплатные модели)':'Groq/SiliconFlow/OpenRouter'}. Включай, если участники согласны. Можно остановить: «панда, стоп».`;
+ if(kind==='mode')text=`Чат: ${c.title}\nРежим: ${payload.mode==='auto'?'автоответ':'черновики тебе'} на ${payload.minutes} мин.\n${payload.instruction||'Коротко и естественно; новые обязательства согласовывать.'}\n\nКонтекст этого чата будет обрабатываться ${providerNames(env)}. Включай, если участники согласны. Можно остановить: «панда, стоп».`;
  else if(kind==='avatar')text='Поставить приложенное фото на твой профиль Telegram?';
  else text=`${c.kind==='channel'?'Пост в':'Сообщение для'} ${c.title}:\n\n${payload.text}\n\nОтправить?`;
  if(kind==='avatar')await queue(env,'card:'+p.id,'',{method:'sendPhoto',payload:{chat_id:env.OWNER_ID,photo:payload.file_id,caption:text,reply_markup:proposalMarkup(p)},expires:p.expires_at});
@@ -157,8 +157,15 @@ export async function peerTurn(env,event,deadline){
   ({message}=await completion(env,messages,{json:true,deadline}));reply=parsePeer(message.content);
  }
  if(!reply){await audit(env,'invalid_peer_output');await queue(env,'peer-format:'+event.id,'Не смог составить надёжный черновик. В чат ничего не отправил.');return;}
- const fresh=await getChat(env,c.id);if(fresh.revision!==c.revision||fresh.mode==='off'||fresh.until_at<=clock(env))return;
- if(!reply.should_reply||!reply.reply.trim())return;
+ const fresh=await getChat(env,c.id);
+ if(fresh.revision!==c.revision||fresh.mode==='off'||fresh.until_at<=clock(env)){
+  await audit(env,'peer_reply_invalidated');
+  return;
+ }
+ if(!reply.should_reply||!reply.reply.trim()){
+  await audit(env,'peer_reply_skipped');
+  return;
+ }
  if(repeatedReply(reply.reply,await recentReplies(env,c.id))){await audit(env,'repeated_reply_blocked');return;}
  await run(env,'UPDATE chats SET summary=? WHERE id=? AND revision=?',[reply.summary.slice(0,500),c.id,c.revision]);
  // A literal salutation answering a literal salutation creates no commitment.

@@ -22,7 +22,8 @@ console.log('PANDA_DIAG_GATES '+JSON.stringify({
  settings:await sql('SELECT paused,CASE WHEN lock_until>? THEN 1 ELSE 0 END AS busy FROM settings WHERE id=1',[now]),
  chats:await sql("SELECT mode,consent,CASE WHEN until_at>? THEN 1 ELSE 0 END AS active,CASE WHEN pause_until>? THEN 1 ELSE 0 END AS manual_pause,CASE WHEN last_incoming>? THEN 1 ELSE 0 END AS reply_window,count(*) AS n FROM chats GROUP BY mode,consent,active,manual_pause,reply_window",[now,now,now-86400000]),
  usage:await sql('SELECT requests,tokens FROM usage WHERE day=?',[day]),
- recent_events:await sql('SELECT kind,count(*) AS n FROM audit WHERE at>? GROUP BY kind',[now-30*60000])
+ recent_events:await sql('SELECT kind,count(*) AS n FROM audit WHERE at>? GROUP BY kind',[now-30*60000]),
+ recent_peer_outbox:await sql("SELECT mode,state,error,count(*) AS n FROM outbox WHERE mode IN ('auto','approved') AND at>? GROUP BY mode,state,error",[now-30*60000])
 }));
 const since=Date.now()-2*3600000;
 console.log('PANDA_DIAG_DIALOGUE '+JSON.stringify({

@@ -29,6 +29,10 @@ export const providerConfig=env=>[
  {name:'groq',base:'https://api.groq.com/openai/v1',key:env.GROQ_API_KEY,model:env.GROQ_MODEL||'openai/gpt-oss-120b'},
  {name:'siliconflow',base:(env.SILICONFLOW_BASE_URL||'https://api.siliconflow.com/v1').replace(/\/$/,''),key:env.SILICONFLOW_API_KEY,model:env.SILICONFLOW_CHAT_MODEL||'Qwen/Qwen2.5-7B-Instruct'},
  {name:'openrouter',base:'https://openrouter.ai/api/v1',key:env.OPENROUTER_API_KEY,model:env.OPENROUTER_MODEL||'openrouter/free'}].filter(p=>env.FREE_ONLY!=='true'||p.name==='nvidia'||p.name==='cloudflare'||p.name==='groq'||(p.name==='openrouter'&&(p.model==='openrouter/free'||p.model.endsWith(':free'))));
+export function providerNames(env){
+ const names={nvidia:'NVIDIA',cloudflare:'Cloudflare Workers AI',groq:'Groq',siliconflow:'SiliconFlow',openrouter:'OpenRouter'};
+ return providerConfig(env).filter(provider=>provider.key).map(provider=>names[provider.name]).join(', ')||'доступным провайдером моделей';
+}
 export function diagnostic(error){if(!(error instanceof ModelUnavailable))return 'Не удалось обработать поручение. /stop и /status работают.';return error.failures.map(f=>`${f.kind}: ${f.provider}${f.status?' HTTP '+f.status:''}${f.retry_after?' retry_after='+f.retry_after+' сек.':''}${f.kind==='DEADLINE_EXCEEDED'?' запрос не отправлен: время обработки истекло':''}${f.body?' '+f.body:''}`).join('\n')+'\nОстатки внутренних лимитов: '+error.remaining.filter(b=>error.failures.some(f=>f.provider===b.provider)).map(b=>`${b.provider}: ${b.requests} запросов, ${b.tokens} токенов`).join('; ');}
 export async function completion(env,messages,{tools,json=false,deadline=Date.now()+20000,only}={}){
  const failures=[];

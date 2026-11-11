@@ -1,7 +1,7 @@
 import {background} from './background.mjs';
 import {one,all,run,batch,key,clock,OWNER,getChat,putMessage,queue,stop,maintenance,audit,createProposal,recentReplies,budgets,snapshotChat} from './store.mjs';
 import {ownerTurn,peerTurn,proposalCard,PEER_SYSTEM,parsePeer} from './agent.mjs';
-import {completion,diagnostic,providerConfig,ModelUnavailable,parseJSON} from './providers.mjs';
+import {completion,diagnostic,providerConfig,providerNames,ModelUnavailable,parseJSON} from './providers.mjs';
 import {telegram,setAvatar} from './telegram.mjs';
 import {repeatedReply} from './dialogue.mjs';
 
@@ -22,7 +22,7 @@ async function chatButtons(env,eventId){
 }
 async function status(env,eventId){
  const now=clock(env),day=new Date(now).toISOString().slice(0,10),[chats,usage,uncertain,s,connections]=await Promise.all([all(env,'SELECT title,mode,until_at FROM chats'),one(env,'SELECT * FROM usage WHERE day=?',[day]),one(env,"SELECT count(*) AS n FROM outbox WHERE state='unknown'"),one(env,'SELECT paused FROM settings WHERE id=1'),one(env,'SELECT count(*) AS n FROM connections WHERE enabled=1')]);
- await queue(env,'reply:'+eventId,`Панда работает. ${s.paused?'Автоответы остановлены.':''}\n${connections.n?'Профиль подключён.':'Сервер ещё не получил подключение профиля.'}\n${chats.map(c=>`${c.title}: ${c.mode==='off'||c.until_at<=now?'выключено':c.mode==='auto'?'автоответ':'черновики'}`).join('\n')||'Сообщения выбранных чатов пока не поступили.'}\nОбращений к моделям сегодня: ${(await budgets(env)).filter(b=>providerConfig(env).some(p=>p.key&&p.name===b.provider)).map(b=>b.provider+': остаток '+b.requests+' запросов / '+b.tokens+' токенов').join('; ')}.\nОтправок с неизвестным результатом: ${uncertain.n}.`);
+ await queue(env,'reply:'+eventId,`Панда работает. ${s.paused?'Автоответы остановлены.':''}\n${connections.n?'Профиль подключён.':'Сервер ещё не получил подключение профиля.'}\n${chats.map(c=>`${c.title}: ${c.mode==='off'||c.until_at<=now?'выключено':(c.mode==='auto'?'автоответ':'черновики')+' · ещё '+Math.ceil((c.until_at-now)/60000)+' мин.'}`).join('\n')||'Сообщения выбранных чатов пока не поступили.'}\nОбращений к моделям сегодня: ${(await budgets(env)).filter(b=>providerConfig(env).some(p=>p.key&&p.name===b.provider)).map(b=>b.provider+': остаток '+b.requests+' запросов / '+b.tokens+' токенов').join('; ')}.\nОтправок с неизвестным результатом: ${uncertain.n}.`);
 }
 async function enableAutoHere(env,scope){
  const c=await getChat(env,scope);
@@ -31,7 +31,7 @@ async function enableAutoHere(env,scope){
  await snapshotChat(env,c.id);
  await batch(env,[
   ['UPDATE settings SET paused=0 WHERE id=1'],
-  ["UPDATE chats SET mode='auto',consent=1,until_at=?,pause_until=0,revision=revision+1 WHERE id=?",[clock(env)+120*60000,c.id]],
+  ["UPDATE chats SET mode='auto',consent=1,until_at=?,pause_until=0,revision=revision+CASE WHEN mode='auto' AND consent=1 AND until_at>? AND pause_until<=? THEN 0 ELSE 1 END WHERE id=?",[clock(env)+120*60000,clock(env),clock(env),c.id]],
   ["UPDATE proposals SET status='cancelled' WHERE scope=? AND kind='mode' AND status='pending'",[c.id]]
  ]);
  await audit(env,'owner_auto_enabled');
@@ -144,7 +144,7 @@ async function applyProposal(env,event,p){
   const conn=await one(env,'SELECT * FROM connections WHERE id=? AND enabled=1',[c.connection_id]);
   if(!conn||!JSON.parse(conn.rights).can_reply)return 'В настройках подключения нужно разрешить ответы.';
   await snapshotChat(env,c.id);
-  updates.push(['UPDATE settings SET paused=0 WHERE id=1'],['UPDATE chats SET mode=?,consent=1,until_at=?,instruction=?,pause_until=0,revision=revision+1 WHERE id=?',[payload.mode,now+payload.minutes*60000,payload.instruction,c.id]]);
+  updates.push(['UPDATE settings SET paused=0 WHERE id=1'],['UPDATE chats SET mode=?,consent=1,until_at=?,instruction=?,pause_until=0,revision=revision+CASE WHEN mode=? AND consent=1 AND until_at>? AND instruction=? AND pause_until<=? THEN 0 ELSE 1 END WHERE id=?',[payload.mode,now+payload.minutes*60000,payload.instruction,payload.mode,now,payload.instruction,now,c.id]]);
   await batch(env,updates);return `В чате «${c.title}» включены ${payload.mode==='auto'?'автоответы':'черновики'} на ${payload.minutes} мин. Новые обязательства — через тебя. Остановить: /stop.`;
  }
  let method='sendMessage',body,mode='approved';
@@ -159,7 +159,7 @@ async function applyProposal(env,event,p){
 async function callback(env,event){
  const [op,id]=event.data.split(':');let text='Неизвестная кнопка.';
  if(op==='chat'){
-  const c=await getChat(env,id);if(c){await queue(env,'reply:'+event.id,`${c.title}\nРежим: ${c.mode}.\nКод чата для импорта: ${c.id}\nПри включении текст чата обрабатывается ${env.FREE_ONLY==='true'?'Cloudflare Workers AI/Groq/OpenRouter (бесплатные модели)':'Cloudflare Workers AI/Groq/SiliconFlow/OpenRouter'}; нужно согласие участников.`,{markup:{inline_keyboard:c.kind==='channel'?[]:[[{text:'📝 Черновики на 2 ч',callback_data:'draft:'+c.id},{text:'🤖 Авто на 2 ч',callback_data:'auto:'+c.id}],[{text:'⏹ Стоп',callback_data:'stop:'+c.id}]]}});return;}
+  const c=await getChat(env,id);if(c){await queue(env,'reply:'+event.id,`${c.title}\nРежим: ${c.mode}.\nКод чата для импорта: ${c.id}\nПри включении текст чата обрабатывается ${providerNames(env)}; нужно согласие участников.`,{markup:{inline_keyboard:c.kind==='channel'?[]:[[{text:'📝 Черновики на 2 ч',callback_data:'draft:'+c.id},{text:'🤖 Авто на 2 ч',callback_data:'auto:'+c.id}],[{text:'⏹ Стоп',callback_data:'stop:'+c.id}]]}});return;}
  }else if(['draft','auto'].includes(op)){const c=await getChat(env,id);if(c){text=await proposalCard(env,event,id,'mode',{mode:op,minutes:120,instruction:'Коротко и естественно. Новые обещания, неизвестные факты и чувствительные темы согласовывать со мной.'});}}
  else if(op==='yes')text=await applyProposal(env,event,await one(env,'SELECT * FROM proposals WHERE id=?',[id]));
  else if(op==='no'){await run(env,"UPDATE proposals SET status='cancelled' WHERE id=? AND status='pending'",[id]);text='Отменено.';}
@@ -237,7 +237,10 @@ export async function flush(env,deadline){
     if(row.mode==='approved'||row.mode==='avatar')await queue(env,'receipt:'+row.id,row.mode==='avatar'?'Фото профиля изменено — Telegram подтвердил.':'Отправлено — Telegram подтвердил.');
    }
   }catch(error){
-   if(error.code==='429'){await run(env,"UPDATE outbox SET state='pending',not_before=?,error='429' WHERE id=?",[clock(env)+Math.max(error.retry,2)*1000,row.id]);}
+   if(error.code==='429'){
+    await run(env,"UPDATE outbox SET state='pending',not_before=?,error='429' WHERE id=?",[clock(env)+Math.max(error.retry,2)*1000,row.id]);
+    await audit(env,'telegram_send_retry');
+   }
    else{const unknown=error.uncertain||!error.code;await run(env,'UPDATE outbox SET state=?,error=? WHERE id=?',[unknown?'unknown':'failed',unknown?'uncertain':error.code,row.id]);if(row.mode!=='owner')await queue(env,'failure:'+row.id,unknown?'Telegram не подтвердил результат отправки. Проверь чат: автоматически повторять не буду.':'Telegram отклонил действие. Ничего повторно не отправляю. Проверь доступ и /status.');}
   }
  }
@@ -279,7 +282,11 @@ export async function work(env){
   // generation. A timer stays within waitUntil's lifetime; cron recovers crashes.
   while(Date.now()<deadline-4000){
    await drain(env,Math.min(deadline-1000,Date.now()+22000));
-   const next=await one(env,"SELECT MIN(not_before) AS due FROM inbox WHERE state='pending'");
+   const next=await one(env,`SELECT MIN(due) AS due FROM (
+    SELECT MIN(not_before) AS due FROM inbox WHERE state='pending'
+    UNION ALL
+    SELECT MIN(not_before) AS due FROM outbox WHERE state='pending'
+   )`);
    if(next?.due==null)break;
    const delay=Math.max(250,next.due-clock(env));
    if(Date.now()+delay>=deadline-4000)break;
