@@ -48,10 +48,6 @@ try{
  let health;for(let i=0;i<12;i++){try{health=await request(url+'/health');if(health.version===sha&&health.enabled)break;}catch{}await pause(1500);}
  if(health?.version!==sha||!health.enabled)throw Error('Live Panda version not confirmed');
  console.log('PANDA_STAGE live-model-probe');
- try{
-  const nvidiaProbe=await request(url+'/ops/probe?provider=nvidia',{token:adminSecret,method:'POST',body:{}});
-  console.log('PANDA_NVIDIA '+JSON.stringify(nvidiaProbe));
- }catch{console.log('PANDA_NVIDIA '+JSON.stringify({available:false,reason:'PROBE_FAILED'}));}
  for(let attempt=0;attempt<3;attempt++){try{const aiProbe=await request(url+'/ops/probe?provider=cloudflare',{token:adminSecret,method:'POST',body:{}});console.log('PANDA_WORKERS_AI '+JSON.stringify(aiProbe));break;}catch(error){if(attempt===2)console.log('PANDA_WORKERS_AI '+JSON.stringify({available:false,reason:error.message,fallback_preserved:true}));else await pause(1500);}}
  let probe;
  // Different edge locations can briefly serve the disabled deployment even
@@ -61,6 +57,17 @@ try{
   catch(error){if(i===7||!error.message.startsWith('Non-JSON response HTTP 503 '))throw error;console.log('PANDA_STAGE waiting-for-activation');await pause(1500);}
  }
  if(!probe.ok)throw Error('Live Panda model not confirmed');
+ // Probe after the active Worker has answered a request on this route.
+ for(let attempt=0;attempt<3;attempt++){
+  try{
+   const nvidiaProbe=await request(url+'/ops/probe?provider=nvidia',{token:adminSecret,method:'POST',body:{}});
+   console.log('PANDA_NVIDIA '+JSON.stringify(nvidiaProbe));
+   break;
+  }catch(error){
+   if(attempt===2)console.log('PANDA_NVIDIA '+JSON.stringify({available:false,reason:error.message}));
+   else await pause(1500);
+  }
+ }
  if(probe.available===false)console.log('PANDA_MODEL_LIMITED '+JSON.stringify({available:false,reason:probe.reason,failures:probe.failures}));
  await tg('setMyCommands',{commands:[{command:'start',description:'Знакомство и подключение'},{command:'chats',description:'Выбрать чат и режим'},{command:'status',description:'Состояние Панды'},{command:'memory',description:'Что я помню'},{command:'stop',description:'Остановить все автоответы'}]});
  await tg('setWebhook',{url:url+'/telegram',secret_token:hookSecret,allowed_updates:['message','callback_query','business_connection','business_message','edited_business_message','deleted_business_messages','my_chat_member'],max_connections:2,drop_pending_updates:false});
