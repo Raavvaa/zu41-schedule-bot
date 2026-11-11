@@ -441,3 +441,47 @@ test('truncated JSON has a safe finish reason and cannot reach the agent',async(
  models.push(response({choices:[{message:{content:'{"reply":',reasoning:'fixture-secret'},finish_reason:'length'}]},200),response({},503));
  await assert.rejects(()=>completion(env,[],{json:true}),e=>{assert.ok(e.failures[0].body.includes('finish_reason=length'));assert.ok(!JSON.stringify(e).includes('fixture-secret'));return true;});
 });
+
+test('NVIDIA is opt-in and the authorized route has the requested fallback order',async()=>{
+ const {providerConfig}=await import('../src/providers.mjs');
+ const settings={...env,FREE_ONLY:'true',NVIDIA_API:'fixture-nvidia',WORKERS_AI_ENABLED:'true'};
+ const observed=[];
+ settings.AI={run:async()=>{observed.push('cloudflare');return {response:'invalid json'};}};
+ settings.FETCH=async(url,request)=>{
+  const provider=url.includes('nvidia')?'nvidia':url.includes('groq')?'groq':'openrouter';
+  observed.push(provider);
+  if(provider==='nvidia'){
+   assert.equal(request.headers.Authorization,'Bearer fixture-nvidia');
+   const payload=JSON.parse(request.body);
+   assert.equal(payload.model,'nvidia/nemotron-3.5-bolt-e4b');
+   assert.equal(payload.response_format,undefined);
+   return response({},429);
+  }
+  if(provider==='groq')return response({},503);
+  return response({choices:[{message:{content:'{"ready":true}'}}]});
+ };
+ assert.equal(providerConfig(settings).find(p=>p.name==='nvidia').key,null);
+ settings.NVIDIA_ENABLED='true';
+ assert.deepEqual(providerConfig(settings).map(p=>p.name),['nvidia','cloudflare','groq','openrouter']);
+ assert.equal((await completion(settings,[{role:'user',content:'fixture'}],{json:true})).provider,'openrouter');
+ assert.deepEqual(observed,['nvidia','cloudflare','groq','openrouter']);
+ assert.equal(providerConfig({...settings,NVIDIA_MODEL:'google/gemma-4-31b-it'})[0].key,'fixture-nvidia');
+ assert.equal(providerConfig({...settings,NVIDIA_MODEL:'unknown'})[0].key,null);
+});
+
+test('authenticated NVIDIA probe runs synthetic input only without enabling real traffic',async()=>{
+ const settings={...env,FREE_ONLY:'true',NVIDIA_API:'fixture-nvidia',NVIDIA_ENABLED:'false'};
+ models.push({role:'assistant',content:'{"action":"draft_reply","text":"Пока не уверен. Во сколько собираетесь?"}'});
+ const url='https://fixture/ops/probe?provider=nvidia';
+ const forbidden=await worker.fetch(new Request(url,{method:'POST'}),settings,{});
+ assert.equal(forbidden.status,403);
+ assert.equal(modelRequests.length,0);
+ const checked=await worker.fetch(new Request(url,{method:'POST',headers:{authorization:'Bearer fixture-admin'}}),settings,{});
+ const result=await checked.json();
+ assert.equal(result.available,true);
+ assert.equal(result.provider,'nvidia');
+ assert.equal(settings.NVIDIA_ENABLED,'false');
+ assert.equal(modelRequests.length,1);
+ assert.match(modelRequests[0].body.messages.at(-1).content,/Вымышленный тест/);
+ assert.equal(result.text,undefined);
+});

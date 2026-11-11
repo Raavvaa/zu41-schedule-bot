@@ -48,6 +48,10 @@ try{
  let health;for(let i=0;i<12;i++){try{health=await request(url+'/health');if(health.version===sha&&health.enabled)break;}catch{}await pause(1500);}
  if(health?.version!==sha||!health.enabled)throw Error('Live Panda version not confirmed');
  console.log('PANDA_STAGE live-model-probe');
+ try{
+  const nvidiaProbe=await request(url+'/ops/probe?provider=nvidia',{token:adminSecret,method:'POST',body:{}});
+  console.log('PANDA_NVIDIA '+JSON.stringify(nvidiaProbe));
+ }catch{console.log('PANDA_NVIDIA '+JSON.stringify({available:false,reason:'PROBE_FAILED'}));}
  for(let attempt=0;attempt<3;attempt++){try{const aiProbe=await request(url+'/ops/probe?provider=cloudflare',{token:adminSecret,method:'POST',body:{}});console.log('PANDA_WORKERS_AI '+JSON.stringify(aiProbe));break;}catch(error){if(attempt===2)console.log('PANDA_WORKERS_AI '+JSON.stringify({available:false,reason:error.message,fallback_preserved:true}));else await pause(1500);}}
  let probe;
  // Different edge locations can briefly serve the disabled deployment even

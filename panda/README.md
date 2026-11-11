@@ -152,3 +152,9 @@ Provider deadline and response safeguards:
 - `DEADLINE_EXCEEDED` means the provider request was never sent. It does not reserve a daily request; a reservation that finishes after the deadline is refunded. Attempted failures (including 400/429) still count.
 - Known upstream `error.code` / `error.type` values are retained from a fixed allowlist, with no raw body, generated text, user identity or credential in diagnostics. Truncated JSON reports `finish_reason=length`.
 - Assistant messages are normalized to content and function calls only before they re-enter the agent. Reasoning and arbitrary provider fields are discarded. A Workers AI `success:false` envelope cannot become a successful completion.
+
+### NVIDIA Bolt
+
+С `NVIDIA_ENABLED=true` и секретом Worker `NVIDIA_API` порядок в бесплатной конфигурации будет NVIDIA Bolt → Cloudflare Workers AI → Groq → OpenRouter Free. По умолчанию `NVIDIA_MODEL=nvidia/nemotron-3.5-bolt-e4b`. Для более естественных черновиков можно выбрать `google/gemma-4-31b-it` в том же слоте. NVIDIA использует таймаут 3 секунды и отдельные внутренние дневные лимиты `NVIDIA_DAILY_REQUESTS` (250) и `NVIDIA_DAILY_TOKENS` (100000). Ключ задаётся секретом, который не нужно повторно вводить при деплое.
+
+По умолчанию `NVIDIA_ENABLED=false`. Бесплатный Developer Program доступ NVIDIA предназначен для тестов и прототипов. Перед включением на реальном трафике проверьте право использования NVIDIA NIM в production. Закрытый `POST /ops/probe?provider=nvidia` запускает только вымышленную задачу, даже при выключенном NVIDIA в рабочей цепочке, и возвращает статус и время без текста ответа.

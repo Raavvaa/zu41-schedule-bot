@@ -295,6 +295,24 @@ export default {
   if(env.ENABLED!=='true')return new Response('disabled',{status:503});
   if(url.pathname==='/ops/probe'&&request.method==='POST'){
    if(!env.ADMIN_SECRET||request.headers.get('authorization')!=='Bearer '+env.ADMIN_SECRET)return new Response('forbidden',{status:403});
+   if(url.searchParams.get('provider')==='nvidia'){
+    if(!env.NVIDIA_API)return Response.json({ok:true,available:false,provider:'nvidia',reason:'SECRET_MISSING'});
+    const started=Date.now();
+    try{
+     const probeEnv={...env,NVIDIA_ENABLED:'true'};
+     const messages=[
+      {role:'system',content:'Return JSON only with action and text. Use action draft_reply and write a short natural Russian draft. Do not promise anything.'},
+      {role:'user',content:'Вымышленный тест: «Заедешь вечером?» Ответь, что пока не знаешь, и спроси, во сколько собираются.'}
+     ];
+     const result=await completion(probeEnv,messages,{json:true,only:'nvidia'});
+     const draft=parseJSON(result.message.content);
+     const available=draft?.action==='draft_reply'&&typeof draft.text==='string'&&/[а-яё]/iu.test(draft.text);
+     return Response.json({ok:true,available,provider:'nvidia',latency_ms:Date.now()-started});
+    }catch(error){
+     if(error instanceof ModelUnavailable)return Response.json({ok:true,available:false,provider:'nvidia',failures:error.failures});
+     return Response.json({ok:false},{status:503});
+    }
+   }
    try{const only=url.searchParams.get('provider')==='cloudflare'?'cloudflare':undefined;const started=Date.now();const r=await completion(env,[{role:'system',content:'Return JSON only: {\"ready\":true}'},{role:'user',content:'Synthetic deployment check. No personal data.'}],{json:true,only});let checks;if(only){const peer=await completion(env,[{role:'system',content:PEER_SYSTEM},{role:'user',content:JSON.stringify({history:[{role:'user',body:'Привет! Как дела?'}],facts:[],instruction:'Короткий тёплый ответ без выдуманных личных фактов.'})}],{json:true,only});const parsed=parsePeer(peer.message.content);const routed=await completion(env,[{role:'system',content:'Route the owner request. Return action=set_chat_style, params={style_patch:{tone:string,instructions:string}}, confidence=high, explanation:string.'},{role:'user',content:'Панда, общайся в этом чате мягко и без официоза.'}],{only,tools:[{type:'function',function:{name:'route',parameters:{type:'object'}}}]});const call=routed.message.tool_calls?.[0];const action=parseJSON(call?.function?.arguments);checks={peer_json:!!parsed,peer_reply:!!parsed?.reply,style_route:action?.action==='set_chat_style'};}
 return Response.json({ok:true,available:checks?Object.values(checks).every(Boolean):true,checks,provider:r.provider,structured_object:typeof parseJSON(r.message.content)==='object'&&parseJSON(r.message.content)!==null,ready:parseJSON(r.message.content)?.ready===true,latency_ms:Date.now()-started});}catch(error){
     // An exhausted daily allowance must not prevent shipping controls/queue fixes.
