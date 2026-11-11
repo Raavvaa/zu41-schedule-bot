@@ -1,95 +1,75 @@
-# Panda upgrade — 10 November 2026
+# Панда: состояние обновления на 11 ноября 2026
 
-Scope: branch `feat/panda-agent-20261110`, only `panda/`, based on `1dc38a7`.
-Worker: `panda-personal-agent`. Bot: `@prooo0biv_bot`.
-Production has NOT been redeployed by this upgrade session.
+Репозиторий `Raavvaa/zu41-schedule-bot`, ветка `feat/panda-agent-20261110`, исходная версия `1dc38a7`. Изменения ограничены `panda/`. Worker `panda-personal-agent`, бот `@prooo0biv_bot`; другие проекты не развёртывались.
 
-## Stages
+## Этапы первоначального задания
 
-1. Per-provider UTC daily request/token budgets; bounded fallback; safe diagnostic types.
-2. Owner target-chat history (4000 conservative tokens), peer history (6000), isolated context, name/username resolution.
-3. Natural-language route action/params/confidence/explanation, low-confidence clarification, owner-only ingestion, send preview.
-4. Per-chat style, partial profile patches, prior-state storage, settings undo.
-5. Source-grounded fact quotes, D1 background queue, five-message/ten-minute trigger.
-6. Conversation state after manual owner messages and confirmed Panda replies; stale revision guard.
-7. SiliconFlow chat/background/embeddings, JS cosine within chat, text fallback.
-8. Regression and synthetic live verification. Original 68 scenarios retained; two obsolete assertions updated (global budget and generic error wording).
+| № | Этап | Состояние |
+|---|---|---|
+| 1 | Раздельные бюджеты и понятные ошибки | Сделано. Отдельные запросы/токены по провайдерам; старый общий лимит не блокирует цепочку. Неотправленные запросы не расходуют квоту. |
+| 2 | Контекст целевого чата | Сделано. Изолированная история, профиль, факты и примеры ручных сообщений за 72 часа. Контекст ограничен; вся история не помещается в один запрос. |
+| 3 | Понимание и выполнение поручений | Сделано. Маршрутизатор, проверка владельца, предпросмотр отправки. Дополнительно — сохраняемая задача «ответь ему», уточнение адресата, продолжение на «ну» и повторный показ настоящего черновика. |
+| 4 | Стиль чата и отмена | Сделано. Частичные изменения профиля, история настроек и undo. Отмена не отзывает отправленные сообщения. |
+| 5 | Фоновое извлечение фактов | Реализовано и протестировано; в текущем FREE_ONLY отключено, чтобы не делать дополнительные запросы SiliconFlow. Явная память владельца и текстовый поиск работают. |
+| 6 | Состояние разговора | Схема, фоновые обновления и защита от устаревшей версии реализованы. Фоновое LLM-обновление conversation_state отключено в FREE_ONLY; обычная сводка summary обновляется вместе с ответом. |
+| 7 | SiliconFlow и эмбеддинги | Реализовано и протестировано. В FREE_ONLY SiliconFlow и расчёт эмбеддингов отключены; используется текстовый поиск. Vectorize не подключён. |
+| 8 | Тесты и проверки качества | 138 изолированных тестов проходят локально; исходные 68 сценариев сохранены, два старых ожидания обновлены под новые требования. Деплой дополнительно запускает 9 проверок с живой моделью и вымышленными данными. Финальный CI также прошёл: 138/138, Groq 9/9, Workers AI peer_json/peer_reply/style_route — true. |
 
-## Before deploying
+## Поведение и модели
 
-Run from a checkout of the specified branch. Do not deploy the root project.
-Cloudflare authentication must already target the account hosting Panda (`wrangler login`, or environment `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`). Never put credential values in files.
+Текущая цепочка: Workers AI `@cf/meta/llama-3.3-70b-instruct-fp8-fast` → Groq `openai/gpt-oss-20b` → OpenRouter `openrouter/free`. Настройка `FREE_ONLY=true` исключает SiliconFlow и платные модели OpenRouter. Внутренние бюджеты не являются выданными провайдерами бесплатными квотами и не гарантируют доступность модели.
+
+После каждого нового входящего сообщения в одном чате перезапускается четырёхсекундное окно тишины. Затем создаётся один ответ на пачку сообщений. Это четыре секунды ожидания плюс время генерации/отправки, а не гарантия ответа за четыре секунды. Telegram Bot API не передаёт боту индикатор набора текста собеседником.
+
+Ручные исходящие сообщения владельца учитываются для стиля только в своём чате и только за последние 72 часа. Реплики Панды не используются как примеры стиля. При недостатке примеров точное воспроизведение стиля не обещается. Bot API не выдаёт архив до подключения; импорт исходящих сообщений за 72 часа описан в README.
+
+`explanation` не отправляется вместо ответа. Reasoning и произвольные поля ответа провайдера удаляются до передачи в агент и следующий API-запрос. Пустые вступления и служебные пересказы задачи отклоняются. Разовая отправка требует настоящего предпросмотра и подтверждения владельца; автоответы действуют только в разрешённых чатах.
+
+## Поручение для Кати
+
+Установлено 11 ноября в 00:37 UTC: до `2026-11-11T12:37:20.165Z` (15:37 по Москве). Живое подключение и право can_reply проверены. Разрешён ровно один найденный личный чат; в нём установлен стиль по доступным ручным сообщениям за 72 часа. Чат сопоставлялся внутри D1 по имени/алиасам и определениям владельца, без выгрузки истории или идентификаторов в логи.
+
+Поручение `katya-autoreply-12h-20261111` идемпотентно: повторный деплой не продлевает срок и не включает режим заново после ручной остановки. Остановка — `/stop`. Никаких тестовых сообщений реальным собеседникам в live-тестах не отправлялось.
+
+## Проверенные причины и пределы диагностики
+
+- Cloudflare мог вернуть JSON-объект в response, тогда как код ожидал строку. Теперь объект сериализуется и проверяется. Failure envelope success:false не считается успешным ответом; произвольной ошибке binding больше не приписывается HTTP 503.
+- Необязательный response_format убран из запросов Workers AI/OpenRouter: JSON запрашивается промптом и проверяется локально. Нативные tools используются только там, где предусмотрена совместимость.
+- Запрос резервировался до проверки дедлайна. Исправлено; истёкший общий дедлайн обозначается DEADLINE_EXCEEDED («запрос не отправлен»), отдельно от настоящего сетевого таймаута.
+- Исторические Groq/OpenRouter HTTP 400/404 нельзя однозначно восстановить из старых записей: тела ошибок были скрыты. Не подтверждены догадки о запрещённом tool_choice или обязательной ошибке strict-схемы. Живые проверки Groq с текущими параметрами проходят.
+- Ранее при проверке SiliconFlow модель эмбеддингов BAAI/bge-m3 отсутствовала в каталоге проверенного ключа; в конфигурации сохранён доступный override Qwen/Qwen3-Embedding-0.6B. В FREE_ONLY эмбеддинги не вызываются.
+- Диагностика сохраняет allowlist error.code/error.type (например, tool_use_failed), безопасные метки и finish_reason=length. Сырые запросы, ответы, reasoning, ключи и тексты переписки не журналируются.
+
+Полный ретроспективный разбор всех сообщений владельца с Пандой не выполнен. Автоматическая проверка отклонила предложенную выгрузку личной истории в логи GitHub Actions; выгрузка не была закоммичена. Прямой доступ к Cloudflare требует входа в аккаунт. Проверены предоставленные скриншоты, код, изолированные сценарии и доступные технические счётчики; это не означает прочтение всей переписки.
+
+## Подтверждение развёртывания
+
+Рабочая версия кода: `69bfb008c3bfbf503d3b2b696c0be54b4babc7f1`. Финальный workflow успешно завершён: https://github.com/Raavvaa/zu41-schedule-bot/actions/runs/42933974033 . `/health` подтверждает `enabled=true`, `free_only=true`, `peer_debounce_ms=4000` и эту версию. Webhook проверен; контрольное сообщение владельцу доставлено (`delivery_state=sent`). Повторная проверка поручения Кати вернула `already_applied=true` и прежний срок.
+
+Три последовательные синтетические проверки Workers AI заняли суммарно 3573 мс. Это измерение проверки модели, а не обещание такой задержки для любых реальных сообщений. Обновление этого отчёта после деплоя не меняет код Worker.
+
+## Что владельцу нужно выполнить вручную
+
+Для уже развёрнутой конфигурации — никаких команд. deploy.mjs сам применяет миграции 0001–0008 к отдельной Panda D1 и использует существующие Cloudflare/GitHub Secrets. Новые секреты для текущей бесплатной цепочки не нужны. Не развёртывайте корневой проект.
+
+Для следующего ручного обновления кода:
 
 ```sh
 git switch feat/panda-agent-20261110
 git pull --ff-only
 npm ci --prefix panda
-cd panda
-npx wrangler secret put SILICONFLOW_API_KEY --name panda-personal-agent
+npm run check --prefix panda
+npm test --prefix panda
 ```
 
-Paste the key into Wrangler's interactive prompt. It is NOT installed automatically by committing code.
-Existing Panda secrets (`TELEGRAM_BOT_TOKEN`, `OWNER_ID`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `WEBHOOK_SECRET`, `ADMIN_SECRET`) remain unchanged.
+Затем запустите существующий workflow `.github/workflows/worker-cache.yml` на этой же ветке с `operation=deploy`. При `operation=diagnose` выводятся технические агрегаты без переписки. Название workflow в интерфейсе может оставаться «Deploy shared week cache»; изолированный job этой ветки развёртывает Панду.
 
-The requested embedding default `BAAI/bge-m3` is not available to the tested international key. Set the verified available override before deploying:
+Не добавляйте SiliconFlow ради текущего FREE_ONLY: он намеренно отключён. Если позже владелец отдельно разрешит другой режим, ключ задаётся интерактивно командой `npx wrangler secret put SILICONFLOW_API_KEY --name panda-personal-agent` из panda/; текущая конфигурация этого не требует.
 
-```sh
-node --input-type=module -e 'import fs from "node:fs";const p="wrangler.jsonc";const c=JSON.parse(fs.readFileSync(p,"utf8"));c.vars.SILICONFLOW_EMBED_MODEL="Qwen/Qwen3-Embedding-0.6B";fs.writeFileSync(p,JSON.stringify(c,null,2)+"\n");'
-git add wrangler.jsonc
-git commit -m 'Panda: select available SiliconFlow embedding model'
-git push origin feat/panda-agent-20261110
-```
+## Изменённые файлы относительно 1dc38a7
 
-All other environment values are already in `panda/wrangler.jsonc`:
+Изменены: `README.md`, `deploy.mjs`, `diagnose.mjs`, `package.json`, `wrangler.jsonc`, `src/agent.mjs`, `src/index.mjs`, `src/providers.mjs`, `src/store.mjs`, `test/live.mjs`, `test/panda.test.mjs`.
 
-| Variable | Default |
-|---|---|
-| GROQ_DAILY_TOKENS / GROQ_DAILY_REQUESTS | 200000 / 500 |
-| SILICONFLOW_DAILY_TOKENS / SILICONFLOW_DAILY_REQUESTS | 500000 / 1000 |
-| OPENROUTER_DAILY_TOKENS / OPENROUTER_DAILY_REQUESTS | 50000 / 100 |
-| GROQ_MODEL | openai/gpt-oss-120b |
-| SILICONFLOW_BASE_URL | https://api.siliconflow.com/v1 |
-| SILICONFLOW_CHAT_MODEL | Qwen/Qwen2.5-7B-Instruct |
-| SILICONFLOW_EMBED_MODEL | BAAI/bge-m3 (override above for tested account) |
-| OPENROUTER_MODEL | openrouter/free |
+Добавлены: `UPGRADE.md`, `src/router.mjs`, `src/background.mjs`, `src/brain.mjs`, `owner-request.mjs`, `owner-request.json`, `migrations/0001_provider_usage.sql`, `migrations/0002_chat_style.sql`, `migrations/0003_chat_facts.sql`, `migrations/0004_conversation_state.sql`, `migrations/0005_chat_aliases.sql`, `migrations/0007_owner_tasks.sql`, `migrations/0008_owner_requests.sql`.
 
-Internal budgets do not guarantee provider quotas or free pricing. Completed requests can take usage beyond the token threshold; subsequent requests skip that provider. Request reservation is atomic. Missing usage is conservatively estimated. Legacy aggregate `usage` remains for historical data only.
-
-The deployment script applies every SQL migration in lexical order, idempotently. No manual migration is required when using that script. To apply them separately to the existing Panda database only:
-
-```sh
-# Still in panda/
-for migration in migrations/*.sql; do
-  npx wrangler d1 execute panda-personal-agent-8976655600 --remote --file "$migration" || exit 1
-done
-npm run check
-npm test
-cd ..
-```
-
-Then run the existing GitHub Actions workflow `.github/workflows/worker-cache.yml` on **feat/panda-agent-20261110**, operation **deploy**. Its UI may retain the old name “Deploy shared week cache”; the branch-specific job is guarded and deploys Panda only. This upgrade does not edit that workflow.
-
-Adding a GitHub secret alone does not expose it to a workflow. The unchanged workflow does not pass SiliconFlow's secret into its runner; the Cloudflare secret installed above is preserved by deploy.mjs (not overwritten with an empty value). If invoking `node panda/deploy.mjs` in an authenticated environment with `SILICONFLOW_API_KEY`, the script also uploads it. Do not print environment variables.
-
-Optional key-specific model check, with the key already in the shell environment:
-
-```sh
-curl -s -H "Authorization: Bearer $SILICONFLOW_API_KEY" https://api.siliconflow.com/v1/models
-```
-
-## Verification and error findings
-
-- Syntax checks pass.
-- 94 unit tests passed (68 original scenarios, including two requirement-updated assertions, plus 26 new scenarios); tests use Miniflare and fictional data.
-- Six synthetic live checks passed through SiliconFlow: six requests, zero Telegram API calls, no repeated replies or unnecessary approval cards. The three-turn dialogue produced two replies; silence is allowed by the dialogue contract.
-- Live transport in this workspace required Node's `NODE_USE_ENV_PROXY=1`. SiliconFlow validation used `SILICONFLOW_TIMEOUT_MS=20000`; it does not prove the five-second production target. Groq's default request timeout is four seconds, SiliconFlow's ten, OpenRouter's six, with an overall completion deadline. Fallback can take longer than five seconds.
-- Historical Groq/OpenRouter HTTP 400/404 causes cannot be established from the old logs: response bodies were not retained. Endpoints and model IDs were checked. Native tool parameters are now confined to Groq; fallback providers use JSON format plus schema instructions and bounded parsing.
-- A NEW SiliconFlow 400 was reproduced for `BAAI/bge-m3`: absent from this key's model catalog. `Qwen/Qwen3-Embedding-0.6B` returned HTTP 200 and a 1024-number vector.
-- HTTP diagnostic body text is deliberately reduced to safe known error labels, never arbitrary upstream text that could echo keys or personal prompts. Maximum 200 characters.
-- Actual automatic conversations with real peers and deployed latency have not been tested by this upgrade session.
-
-## Usage boundaries
-
-In an interlocutor's chat, address commands with “панда”. Unprefixed outgoing text is treated as the owner's manual reply; in the bot DM free text is accepted directly. Ambiguous chat selection asks a question. Bot API does not provide the pre-connection archive. History retains the existing 72-hour window; sourced persistent facts remain until forgotten. Unknown personal commitments still require a draft, but this classification is model-based, not an absolute guarantee.
-
-Automatic extracted facts are exact source quotes, not inferred biographies. Style conflict resolution is model-based; code merges provided fields and preserves other fields. Undo changes settings, not already sent Telegram messages, and does not override a global stop. Do not treat model-reported confidence as proof of understanding.
+Все пути в этом списке находятся внутри `panda/`. Секреты в исходники не включались.
