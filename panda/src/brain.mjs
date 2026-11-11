@@ -5,7 +5,7 @@ export const replyIntent=text=>/(?:ответь|ответить)(?=\s|$)|(?:н�
 export const continuation=text=>/^(?:ну|да|давай|сделай|продолжай|может сделаешь|так сделай|ответить на его последние сообщения)[.!?\s]*$/iu.test(String(text).trim());
 export const badOwnerText=text=>!String(text||'').trim()||/^(?:user\s+(?:wants|asks|requests)|analysis\s*:)|no action needed|just respond|we cannot send|tool_call|claims_action|^(?:владелец|пользователь)\s+(?:хочет|просит|попросил)|^я\s+(?:уже\s+)?(?:отправил|отправила|включил|включила)/iu.test(String(text))||/^(?:конечно[,!]?\s*)?(?:вот (?:ответ|текст|сообщение)|готово|сейчас (?:напишу|отправлю))[.!:\s]*$/iu.test(String(text).trim());
 export async function taskState(env){return one(env,'SELECT * FROM owner_tasks WHERE owner_id=? AND expires_at>?',[String(env.OWNER_ID),clock(env)]);}
-export async function saveTask(env,event,{target=null,instruction=event.text,status='awaiting_target'}={}){const now=clock(env);await run(env,'INSERT INTO owner_tasks(owner_id,action,target,instruction,status,source_event_id,updated_at,expires_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(owner_id) DO UPDATE SET action=excluded.action,target=excluded.target,instruction=excluded.instruction,status=excluded.status,source_event_id=excluded.source_event_id,updated_at=excluded.updated_at,expires_at=excluded.expires_at',[String(env.OWNER_ID),'send_once',target,String(instruction).slice(0,1500),status,event.id,now,now+30*60000]);}
+export async function saveTask(env,event,{target=null,instruction=event.text,status='awaiting_target',action='send_once'}={}){const now=clock(env);await run(env,'INSERT INTO owner_tasks(owner_id,action,target,instruction,status,source_event_id,updated_at,expires_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(owner_id) DO UPDATE SET action=excluded.action,target=excluded.target,instruction=excluded.instruction,status=excluded.status,source_event_id=excluded.source_event_id,updated_at=excluded.updated_at,expires_at=excluded.expires_at',[String(env.OWNER_ID),action,target,String(instruction).slice(0,1500),status,event.id,now,now+30*60000]);}
 export async function clearTask(env){await run(env,'DELETE FROM owner_tasks WHERE owner_id=?',[String(env.OWNER_ID)]);}
 export async function replyTask(env,event,{chats,target,pending,system,parseReply,proposal,deadline}){
  const show=!!pending&&pending.status==='preview'&&/(?:где|покажи).{0,30}(?:ответ|черновик)|^и где же он[?!\s]*$/iu.test(event.text);
@@ -34,3 +34,17 @@ export async function replyTask(env,event,{chats,target,pending,system,parseRepl
 }
 
 export function parseAutoCommand(text){const t=String(text||'').toLowerCase().replace(/ё/g,'е');if(!/автоответ/u.test(t)||!/(?:включи|вруби|врубай|поставь|запусти|активируй|сделай|настрой)/u.test(t)||/(?:выключи|отключи|останови)/u.test(t))return null;const m=t.match(/(\d{1,4})\s*(час[\p{L}]*|ч(?=\s|$)|мин[\p{L}]*)/u);return {minutes:m?Number(m[1])*(m[2].startsWith('мин')?1:60):/двенадцать\s+час/u.test(t)?720:/сутки/u.test(t)?1440:/пол\s*часа/u.test(t)?30:120};}
+
+
+// Resolve explicit, ongoing style directions before the language model sees them.
+export function parseStyleDirection(text){
+ const command=String(text||'').trim()
+  .replace(/^(?:(?:бля(?:ть)?|блин)[,\s]+)?я же (?:написал(?:а)?|сказал(?:а)?)\s*[,—:]?\s*(?:что\s+)?/iu,'')
+  .replace(/^панда(?:[,!:\s]+|$)/iu,'')
+  .replace(/^пожалуйста[,\s]+/iu,'');
+ const match=command.match(/^(?:дальше\s+|теперь\s+)?(?:общайся|переписывайся|разговаривай|отвечай|пиши)\s+(?:с\s+(.+?)\s+|здесь\s+)?(как будто\s+.+|в (?:стиле|тоне)\s+.+)$/iu)
+  || command.match(/^с\s+(.+?)\s+(?:дальше\s+|теперь\s+)?(?:общайся|переписывайся|разговаривай|отвечай|пиши)\s+(как будто\s+.+|в (?:стиле|тоне)\s+.+)$/iu);
+ if(!match||/[«»"\n;]/u.test(command)||/(?:^|\s)(?:сейчас|один раз)(?=\s|[.!?]|$)/iu.test(command))return null;
+ const tone=match[2].replace(/[.!?]+$/u,'').trim();
+ return tone.length<=300?{recipient:match[1]?.trim(),tone}:null;
+}

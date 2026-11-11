@@ -485,3 +485,41 @@ test('authenticated NVIDIA probe runs synthetic input only without enabling real
  assert.match(modelRequests[0].body.messages.at(-1).content,/Вымышленный тест/);
  assert.equal(result.text,undefined);
 });
+
+test('style direction through Telegram saves the named chat profile and never queues a send',async()=>{
+ await enabled('auto');
+ await run(env,"UPDATE chats SET title='fade' WHERE id=?",[cid]);
+ await run(env,"INSERT INTO chats(id,telegram_id,title) VALUES('style-other','999','Гангстер')");
+ for(const command of ['панда общайся с fade как будто ты гангстер','я же написал что панда общайся с fade как будто ты гангстер','с fade отвечай в стиле старого детектива']){
+  await acceptUpdate(env,privateUpdate(command));
+  await drain(env);
+  const expected=command.startsWith('с fade')?'в стиле старого детектива':'как будто ты гангстер';
+  assert.equal((await one(env,'SELECT tone FROM chat_style WHERE chat_id=?',[cid])).tone,expected);
+ }
+ assert.equal((await all(env,'SELECT * FROM chat_style')).length,1);
+ assert.equal((await all(env,'SELECT * FROM proposals')).length,0);
+ assert.equal(modelRequests.length,0);
+ assert.equal(sent.filter(x=>String(x.body.chat_id)===peer).length,0);
+ assert.equal((await one(env,'SELECT mode FROM chats WHERE id=?',[cid])).mode,'auto');
+ models.push(peerReply('Ну, рассказывай, что случилось.'));
+ await acceptUpdate(env,business('Как дела?'));
+ await drain(env);
+ assert.match(modelRequests[0].body.messages[0].content,/в стиле старого детектива/);
+});
+
+test('style phrasing distinguishes settings from quoted and one-off instructions',async()=>{
+ const {parseStyleDirection}=await import('../src/brain.mjs');
+ assert.equal(parseStyleDirection('отправь fade: «общайся с fade как будто ты гангстер»'),null);
+ assert.equal(parseStyleDirection('общайся с fade как будто ты гангстер один раз'),null);
+ assert.deepEqual(parseStyleDirection('общайся здесь в стиле старого детектива'),{recipient:undefined,tone:'в стиле старого детектива'});
+ const text=await ownerTurn(env,{id:'unknown-style',text:'общайся с неизвестным как будто ты гангстер'},Date.now()+20000);
+ assert.match(text,/Для какого подключённого чата сохранить стиль/);
+ await enabled();
+ await run(env,"UPDATE chats SET title='fade' WHERE id=?",[cid]);
+ const applied=await ownerTurn(env,{id:'choose-style-chat',text:'fade'},Date.now()+20000);
+ assert.match(applied,/Сохранила стиль/);
+ assert.equal((await one(env,'SELECT tone FROM chat_style WHERE chat_id=?',[cid])).tone,'как будто ты гангстер');
+ assert.equal((await all(env,'SELECT * FROM owner_tasks')).length,0);
+ assert.equal((await all(env,'SELECT * FROM proposals')).length,0);
+ assert.equal(modelRequests.length,0);
+});
