@@ -146,3 +146,9 @@ Workers AI: ответы `response` как объект сериализуютс
 Служебные заметки и пустые обещания модели отклоняются; `explanation` не является готовым ответом. Автоответ со сроком разбирается без модели (до 720 минут). Разрешение адресата: текущий чат, точный username, затем совпадения имён и фамилии с проверкой неоднозначности. Поддерживаются известные формы имён и точная транслитерация, без нечёткого совпадения произвольных префиксов.
 
 `owner-request.mjs` выполняет только конкретную текущую просьбу владельца о 12 часах для Кати, один раз и только при единственном проверенном подключённом адресате. Срок фиксируется в `owner_requests` (0008), повторный деплой не продлевает 12 часов. Переписка не выводится в CI. При отсутствии однозначного адресата настройка не применяется.
+
+
+Provider deadline and response safeguards:
+- `DEADLINE_EXCEEDED` means the provider request was never sent. It does not reserve a daily request; a reservation that finishes after the deadline is refunded. Attempted failures (including 400/429) still count.
+- Known upstream `error.code` / `error.type` values are retained from a fixed allowlist, with no raw body, generated text, user identity or credential in diagnostics. Truncated JSON reports `finish_reason=length`.
+- Assistant messages are normalized to content and function calls only before they re-enter the agent. Reasoning and arbitrary provider fields are discarded. A Workers AI `success:false` envelope cannot become a successful completion.

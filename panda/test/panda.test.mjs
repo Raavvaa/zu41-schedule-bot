@@ -407,3 +407,37 @@ test('owner writing request is a conversation, not an external send task',async(
 test('full recipient name disambiguates two Vlads while first name alone asks',async()=>{const {resolveTarget}=await import('../src/store.mjs'),chats=[{handle:'a',title:'Vladislav Kondrashov'},{handle:'b',title:'Владислав Петров'}];assert.equal(resolveTarget({text:'ответь владу кондрашову'},chats),'a');assert.equal(resolveTarget({text:'ответь Владу'},chats),null);});
 
 test('Katya can be resolved from an explicit owner definition of a differently named connected chat',async()=>{await namedChat('Кто-то','someone_fixture');await putMessage(env,{id:'cat-definition',scope:'owner',role:'user',manual:1,body:'Катя это Кто-то'});const {applyOwnerRequest}=await import('../owner-request.mjs');const result=await applyOwnerRequest({sql:(s,p=[])=>all(env,s,p),tg:async()=>({is_enabled:true,user:{id:owner},rights:{can_reply:true}}),owner,now,request:{id:'katya-autoreply-12h-20261111',action:'enable_katya_autoreply',hours:12,expires:new Date(now+86400000).toISOString()}});assert.equal(result.applied,true);assert.equal((await one(env,'SELECT mode FROM chats WHERE id=?',[cid])).mode,'auto');});
+
+
+test('expired turn never reserves a provider request or reports a network failure',async()=>{
+ const {ModelUnavailable,diagnostic}=await import('../src/providers.mjs');
+ await assert.rejects(()=>completion(env,[],{deadline:Date.now()-1}),e=>{assert.ok(e instanceof ModelUnavailable);assert.ok(e.failures.every(f=>f.kind==='DEADLINE_EXCEEDED'));assert.ok(diagnostic(e).includes('запрос не отправлен'));return true;});
+ assert.equal(modelRequests.length,0);assert.equal((await all(env,'SELECT * FROM provider_usage')).length,0);
+});
+test('reservation finishing after deadline is refunded without erasing attempted requests',async()=>{
+ await run(env,'INSERT INTO provider_usage(day,provider,requests,tokens) VALUES(?,?,?,?)',[new Date(now).toISOString().slice(0,10),'groq',7,12]);
+ const originalDB=env.DB,realNow=Date.now,deadline=realNow()+60000;
+ env.DB={prepare(sql){const statement=originalDB.prepare(sql);return {bind(...args){const bound=statement.bind(...args);return {first:()=>bound.first(),all:()=>bound.all(),async run(){const result=await bound.run();if(sql.startsWith('UPDATE provider_usage SET requests=requests+1'))Date.now=()=>deadline+1;return result;}};}};}};
+ try{await assert.rejects(()=>completion(env,[],{deadline}),e=>e.failures.every(f=>f.kind==='DEADLINE_EXCEEDED'));assert.equal(modelRequests.length,0);assert.equal((await one(env,'SELECT sum(requests) AS n FROM provider_usage')).n,7);}finally{Date.now=realNow;env.DB=originalDB;}
+});
+test('known provider error code survives while private generation and unknown codes are withheld',async()=>{
+ const {safeErrorBody}=await import('../src/providers.mjs');
+ models.push(response({error:{code:'tool_use_failed',type:'invalid_request_error',message:'fixture-private-input',failed_generation:'fixture-private-output'}},400),response({error:{code:'fixture-secret-code',message:'fixture-secret-message'}},400));
+ await assert.rejects(()=>completion(env,[]),e=>{assert.ok(e.failures[0].body.includes('code=tool_use_failed'));assert.ok(e.failures[0].body.includes('type=invalid_request_error'));assert.ok(!JSON.stringify(e).includes('fixture-'));return true;});
+ assert.equal(safeErrorBody(undefined),'[upstream body withheld]');
+});
+test('provider reasoning and extra response fields never become visible text or request fields',async()=>{
+ models.push({role:'assistant',content:'Готовый ответ',reasoning:'fixture-private-reasoning',reasoning_content:'fixture-private-reasoning',provider_metadata:{secret:'fixture-secret'}});
+ const r=await completion(env,[]);assert.deepEqual(r.message,{role:'assistant',content:'Готовый ответ'});
+ const {assistantMessage}=await import('../src/providers.mjs');assert.equal(assistantMessage({reasoning:'User requests to answer...'}).content,null);
+ const normalized=assistantMessage({tool_calls:[{id:'x',type:'function',function:{name:'route',arguments:{action:'none'},private:'secret'},private:'secret'}]});
+ assert.equal(normalized.tool_calls[0].function.arguments,'{"action":"none"}');assert.ok(!JSON.stringify(normalized).includes('secret'));
+});
+test('Workers AI failure envelope is rejected even when transport succeeds',async()=>{
+ env.WORKERS_AI_ENABLED='true';env.AI={run:async()=>({success:false,errors:[{code:'invalid_request_error',message:'fixture-secret'}],result:null})};
+ const r=await completion(env,[]);assert.equal(r.provider,'groq');assert.equal(modelRequests.length,1);
+});
+test('truncated JSON has a safe finish reason and cannot reach the agent',async()=>{
+ models.push(response({choices:[{message:{content:'{"reply":',reasoning:'fixture-secret'},finish_reason:'length'}]},200),response({},503));
+ await assert.rejects(()=>completion(env,[],{json:true}),e=>{assert.ok(e.failures[0].body.includes('finish_reason=length'));assert.ok(!JSON.stringify(e).includes('fixture-secret'));return true;});
+});
