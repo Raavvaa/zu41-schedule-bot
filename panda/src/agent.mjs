@@ -149,12 +149,12 @@ export async function peerTurn(env,event,deadline){
  const incoming=ctx.history.filter(x=>x.role==='user'&&event.message_ids?.includes(x.id)).map(x=>x.text);
  if(!latest)return;
  const messages=[{role:'system',content:PEER_SYSTEM+'\nПрофиль стиля владельца: '+JSON.stringify(ctx.style?{tone:ctx.style.tone,instructions:ctx.style.instructions}:{})},{role:'user',content:JSON.stringify({...ctx,latest_peer_message:latest,latest_peer_messages:incoming.length?incoming:[latest],recent_replies:previous.slice(0,8)})}];
- let {message}=await completion(env,messages,{json:true,deadline}),reply=parsePeer(message.content);
+ let {message,provider}=await completion(env,messages,{json:true,deadline}),reply=parsePeer(message.content);
  if(reply?.should_reply&&repeatedReply(reply.reply,previous)){
   await audit(env,'repeated_reply_repair');
   if(Date.now()>deadline-2500)return;
-  messages.push({role:'assistant',content:message.content},{role:'system',content:'Этот ответ повторяет уже сказанное и не отправлен. Продолжи разговор по последнему сообщению без повторного приветствия. Если нового ответа не нужно, should_reply=false. Верни исправленный JSON.'});
-  ({message}=await completion(env,messages,{json:true,deadline}));reply=parsePeer(message.content);
+  messages.push({role:'assistant',content:message.content},{role:'system',content:'Этот ответ повторяет уже сказанное и не отправлен. Ответь на новый вопрос или реплику другими словами, по существу. Не повторяй приветствие или готовые фразы из recent_replies. Если нового ответа не нужно, should_reply=false. Верни исправленный JSON.'});
+  ({message}=await completion(env,messages,{json:true,deadline,retryLast:provider}));reply=parsePeer(message.content);
  }
  if(!reply){await audit(env,'invalid_peer_output');await queue(env,'peer-format:'+event.id,'Не смог составить надёжный черновик. В чат ничего не отправил.');return;}
  const fresh=await getChat(env,c.id);

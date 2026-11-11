@@ -174,6 +174,7 @@ test('second incoming message continues conversation and repairs repeated greeti
  await enabled('auto');models.push(peerReply('Привет!'));await acceptUpdate(env,business('Привет'));await drain(env);
  models.push(peerReply('Привет!!'),peerReply('Что тебя так рассмешило?'));await acceptUpdate(env,business('Ахахах'));await drain(env);
  assert.deepEqual(sent.filter(x=>String(x.body.chat_id)===peer).map(x=>x.body.text),['Привет!','Что тебя так рассмешило?']);
+ assert.deepEqual(modelRequests.map(x=>new URL(x.url).hostname),['api.groq.com','api.groq.com','openrouter.ai']);
  const data=JSON.parse(modelRequests[1].body.messages[1].content);assert.equal(data.latest_peer_message,'Ахахах');assert.ok(data.history.some(x=>x.role==='assistant'&&x.text==='Привет!'));
 });
 test('unchanged greeting after repair is suppressed rather than sent or offered for approval',async()=>{

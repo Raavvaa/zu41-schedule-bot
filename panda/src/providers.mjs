@@ -34,9 +34,14 @@ export function providerNames(env){
  return providerConfig(env).filter(provider=>provider.key).map(provider=>names[provider.name]).join(', ')||'доступным провайдером моделей';
 }
 export function diagnostic(error){if(!(error instanceof ModelUnavailable))return 'Не удалось обработать поручение. /stop и /status работают.';return error.failures.map(f=>`${f.kind}: ${f.provider}${f.status?' HTTP '+f.status:''}${f.retry_after?' retry_after='+f.retry_after+' сек.':''}${f.kind==='DEADLINE_EXCEEDED'?' запрос не отправлен: время обработки истекло':''}${f.body?' '+f.body:''}`).join('\n')+'\nОстатки внутренних лимитов: '+error.remaining.filter(b=>error.failures.some(f=>f.provider===b.provider)).map(b=>`${b.provider}: ${b.requests} запросов, ${b.tokens} токенов`).join('; ');}
-export async function completion(env,messages,{tools,json=false,deadline=Date.now()+20000,only}={}){
+export async function completion(env,messages,{tools,json=false,deadline=Date.now()+20000,only,retryLast}={}){
  const failures=[];
- for(const p of providerConfig(env)){
+ const providers=providerConfig(env);
+ if(retryLast){
+  const index=providers.findIndex(provider=>provider.name===retryLast);
+  if(index>=0)providers.push(...providers.splice(index,1));
+ }
+ for(const p of providers){
   if(!p.key||(only&&p.name!==only))continue;
   if(Date.now()>deadline-100){failures.push({kind:'DEADLINE_EXCEEDED',provider:p.name});continue;}
   const now=clock(env),state=await one(env,'SELECT * FROM providers WHERE name=?',[p.name]);
