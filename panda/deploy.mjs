@@ -73,6 +73,7 @@ try{
    console.log('PANDA_PREVIOUS '+JSON.stringify({detached_from_this_worker:checked.url!==url+'/telegram'}));
   }catch{console.log('PANDA_PREVIOUS cleanup_not_confirmed; previous webhook cannot authenticate to the new identity');}
  }
+ console.log('PANDA_OWNER_REQUEST '+JSON.stringify(await (await import('./owner-request.mjs')).applyOwnerRequest({sql,tg,owner:e.OWNER_ID})));
  // Owner-only /status exercises deployed ingestion, D1, outbox and Telegram.
  const id=-Date.now(),owner=Number(e.OWNER_ID);
  const res=await fetch(url+'/telegram',{method:'POST',headers:{'content-type':'application/json','X-Telegram-Bot-Api-Secret-Token':hookSecret},body:JSON.stringify({update_id:id,message:{message_id:id,from:{id:owner},chat:{id:owner,type:'private'},text:'/status'}}),signal:AbortSignal.timeout(10000)});

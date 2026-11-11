@@ -36,6 +36,11 @@ try{
  for(let i=1;i<peerSent.length;i++)assert.ok(!repeatedReply(peerSent[i],peerSent.slice(0,i)),'No repeated greeting or identical answer');
  assert.equal((await all(env,"SELECT * FROM proposals WHERE scope=?",[scope])).length,0,'Ordinary chat must not ask for approval in auto mode');
  assert.ok(!sent.some(x=>/недоступна|надёжный черновик/i.test(x.text)),'No silent model/format failure');
- console.log('PANDA_LIVE_TEST '+JSON.stringify({passed:6,requests,providers:[...providers],models,telegram_calls:0,synthetic_only:true,dialogue_turns:3,dialogue_replies:peerSent.length,repeated_replies:0,ordinary_approval_cards:0}));
+ phase='owner-reply-task';await run(env,'UPDATE chats SET title=? WHERE id=?',['Вымышленный друг',scope]);await run(env,'INSERT OR IGNORE INTO chat_aliases(chat_id,alias) VALUES(?,?)',[scope,'synthetic_friend']);
+ const clarify=await ownerTurn(env,{id:'live-task-ask',scope:'owner',text:'ответь на его последние сообщения'},Date.now()+25000);assert.ok(clarify.includes('Кому'));
+ const preview=await ownerTurn(env,{id:'live-task-target',scope:'owner',text:'@synthetic_friend'},Date.now()+25000);assert.ok(preview.includes('Предложение'));
+ const draft=(await all(env,"SELECT * FROM proposals WHERE event_id='live-task-target' AND kind='send'"))[0];assert.ok(draft);const draftText=JSON.parse(draft.payload).text;assert.ok(draftText.length>2&&!/User wants|No action needed|just respond|Конечно, вот ответ:\s*$/i.test(draftText));
+ const follow=await ownerTurn(env,{id:'live-task-follow',scope:'owner',text:'ну'},Date.now()+25000);assert.ok(follow.includes('Черновик уже'));assert.equal((await all(env,"SELECT * FROM proposals WHERE event_id='live-task-follow'")).length,0);
+ console.log('PANDA_LIVE_TEST '+JSON.stringify({passed:9,requests,providers:[...providers],models,telegram_calls:0,synthetic_only:true,dialogue_turns:3,dialogue_replies:peerSent.length,repeated_replies:0,ordinary_approval_cards:0}));
 }catch(error){console.error('PANDA_LIVE_TEST '+JSON.stringify({failed:true,phase,requests,kind:error.kind||error.code||'validation',assertion:error.code==='ERR_ASSERTION'?error.message:undefined,failures:error.failures||[]}));process.exitCode=1;}
 finally{await mf.dispose();}

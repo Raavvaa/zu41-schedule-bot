@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS owner_tasks(owner_id TEXT PRIMARY KEY, action TEXT NOT NULL, target TEXT, instruction TEXT NOT NULL, status TEXT NOT NULL, source_event_id TEXT NOT NULL, updated_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);

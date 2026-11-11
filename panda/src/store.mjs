@@ -49,6 +49,7 @@ export async function stop(env,scope=null){
  if(scope)await snapshotChat(env,scope);
  const now=clock(env),where=scope?' WHERE id=?':'',args=scope?[scope]:[];
  const items=[[`UPDATE chats SET mode='off',revision=revision+1${where}`,args],[`UPDATE proposals SET status='cancelled' WHERE status='pending'${scope?' AND scope=?':''}`,args],[`UPDATE outbox SET state='cancelled' WHERE state='pending' AND mode<>'owner'${scope?' AND scope=?':''}`,args]];
+ items.push(['DELETE FROM owner_tasks WHERE owner_id=?'+(scope?' AND target=?':''),scope?[String(env.OWNER_ID),scope]:[String(env.OWNER_ID)]]);
  if(!scope)items.unshift(['UPDATE settings SET paused=1 WHERE id=1']);
  await batch(env,items);await audit(env,'owner_stop');return now;
 }
@@ -88,7 +89,16 @@ export async function optionalRows(env,table,chat){const exists=await one(env,"S
 export async function chatContext(env,id,budget=4000){const c=await context(env,id,budget);const query=c.history.at(-1)?.body||'';return {...c,style:await activeStyle(env,id),peer_facts:(await relevantFacts(env,id,query)).map(({fact,source,source_message_id,confidence})=>({fact,source,source_message_id,confidence})),conversation_state:(await optionalRows(env,'conversation_state',id))[0]||null};}
 const words=text=>String(text).toLowerCase().replace(/ё/g,'е').match(/[\p{L}\p{N}_]+/gu)||[];
 const stem=w=>w.replace(/(?:ами|ями|ой|ей|ую|юю|ом|ем|а|я|у|ю|е|ы|и)$/u,'');
-export function resolveTarget(event,chats){if(event.target)return chats.find(c=>c.handle===event.target)?.handle||null;const textWords=words(event.text),matches=chats.filter(c=>words(c.title+' '+(c.aliases||'')).some(w=>w.length>=3&&textWords.some(t=>t===w||(stem(w).length>=3&&stem(t)===stem(w)))));return matches.length===1?matches[0].handle:null;}
+const transliterate=w=>String(w).replace(/[а-я]/g,c=>({а:'a',б:'b',в:'v',г:'g',д:'d',е:'e',ж:'zh',з:'z',и:'i',й:'y',к:'k',л:'l',м:'m',н:'n',о:'o',п:'p',р:'r',с:'s',т:'t',у:'u',ф:'f',х:'kh',ц:'ts',ч:'ch',ш:'sh',щ:'sch',ы:'y',э:'e',ю:'yu',я:'ya',ь:'',ъ:''})[c]??c);
+export function resolveTarget(event,chats){
+ if(event.target)return chats.find(c=>c.handle===event.target)?.handle||null;
+ const text=String(event.text||'').toLowerCase(),handles=[...text.matchAll(/@([a-z0-9_]{3,32})/giu)].map(m=>m[1]);
+ if(handles.length){const matches=chats.filter(c=>String(c.aliases||'').toLowerCase().split(',').some(a=>handles.includes(a.replace(/^@/,''))));return matches.length===1?matches[0].handle:null;}
+ const groups=[['владислав','влад','владик'],['екатерина','катерина','катя'],['александр','саша'],['александра','саша'],['мария','маша']];
+ const forms=w=>[transliterate(stem(w)),transliterate(w)],expand=items=>new Set(items.flatMap(w=>{const roots=forms(w);return [...roots,...groups.filter(g=>g.some(n=>forms(n).some(v=>roots.includes(v)))).flat().flatMap(forms)];}));
+ const textGroups=words(text).map(w=>expand([w])),ranked=chats.map(c=>{const known=expand(words(c.title+' '+(c.aliases||'')));return {chat:c,score:textGroups.filter(group=>[...group].some(w=>w.length>=3&&known.has(w))).length};});
+ const best=Math.max(0,...ranked.map(r=>r.score)),matches=ranked.filter(r=>best>0&&r.score===best);return matches.length===1?matches[0].chat.handle:null;
+}
 
 export async function snapshotChat(env,id){const c=await getChat(env,id);if(!c)return;const style=await one(env,'SELECT tone,instructions FROM chat_style WHERE chat_id=?',[id]);await run(env,'INSERT INTO chat_changes(chat_id,state,created_at) VALUES(?,?,?)',[id,JSON.stringify({mode:c.mode,until_at:c.until_at,instruction:c.instruction,style}),clock(env)]);}
 export async function undoChat(env,id){const last=await one(env,'SELECT * FROM chat_changes WHERE chat_id=? AND undone=0 ORDER BY id DESC LIMIT 1',[id]);if(!last)return false;const old=JSON.parse(last.state);const statements=[['UPDATE chats SET mode=?,until_at=?,instruction=?,revision=revision+1 WHERE id=?',[old.mode,old.until_at,old.instruction,id]],['UPDATE chat_changes SET undone=1 WHERE id=?',[last.id]]];if(old.style)statements.push(['INSERT INTO chat_style(chat_id,tone,instructions,updated_at) VALUES(?,?,?,?) ON CONFLICT(chat_id) DO UPDATE SET tone=excluded.tone,instructions=excluded.instructions,updated_at=excluded.updated_at',[id,old.style.tone,old.style.instructions,clock(env)]]);else statements.push(['DELETE FROM chat_style WHERE chat_id=?',[id]]);await batch(env,statements);return true;}

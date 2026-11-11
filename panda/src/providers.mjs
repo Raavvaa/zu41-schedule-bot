@@ -19,7 +19,7 @@ export async function completion(env,messages,{tools,json=false,deadline=Date.no
   if(Date.now()>deadline-100){failures.push({kind:'NETWORK_TIMEOUT',provider:p.name});continue;}
   let input=messages,body={model:p.model,messages:input,temperature:0.35,...(p.name==='groq'?{max_completion_tokens:850,reasoning_effort:'low'}:{max_tokens:850})};
   if(tools&&p.name==='groq')Object.assign(body,{tools,tool_choice:'required',parallel_tool_calls:false});
-  else if(tools){body.messages=[{role:'system',content:'For owner routing return JSON {"action":string,"params":object,"confidence":"high|medium|low","explanation":string}. Otherwise return {"name":tool name,"arguments":object}. Tool schemas: '+JSON.stringify(tools)},...messages.map(m=>m.role==='tool'?{role:'user',content:'Tool result: '+m.content}:m.tool_calls?{role:'assistant',content:'Previous tool request: '+JSON.stringify(m.tool_calls)}:m)];body.response_format={type:'json_object'};}
+  else if(tools){body.messages=[{role:'system',content:'Select exactly one of the supplied tools. Return JSON {"name":"tool name","arguments":{...valid arguments for that tool...}}. For route, arguments contains action, params, confidence, explanation. Text and explanation are user-facing, in the user language; never output internal task summaries. Tool schemas: '+JSON.stringify(tools)},...messages.map(m=>m.role==='tool'?{role:'user',content:'Tool result: '+m.content}:m.tool_calls?{role:'assistant',content:'Previous tool request: '+JSON.stringify(m.tool_calls)}:m)];body.response_format={type:'json_object'};}
   if(json)body.response_format={type:'json_object'};
   // Free router models and the Workers AI binding differ in JSON-mode support.
   // Request JSON in the prompt and validate it locally instead of forwarding

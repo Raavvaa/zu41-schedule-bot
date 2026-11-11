@@ -121,7 +121,7 @@ export async function acceptUpdate(env,u){
   const text=String(m.text??m.caption??'');
   if(m.document){event={id,scope:OWNER,type:'import',file_id:m.document.file_id,size:m.document.file_size||0,name:m.document.file_name||'',text};}
   else if(m.voice||m.audio||m.video_note)event={id,scope:OWNER,type:'owner',text:'/no_voice'};
-  else event={id,scope:OWNER,type:'owner',text:prefix(text)?strip(text):text,photo:m.photo?.at(-1)?.file_id};
+  else event={id,scope:OWNER,type:'owner',text:prefix(text)?strip(text):text,photo:m.photo?.at(-1)?.file_id,quoted_text:String(m.reply_to_message?.text||'').slice(0,1000)};
   if(stopCommand(event.text||''))await stop(env);
  }
  if(!event)return;
