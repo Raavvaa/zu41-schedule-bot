@@ -7,6 +7,8 @@ import {one,all,run,context,putFact,putMessage,createProposal,queue,stop,mainten
 import {ownerTurn,peerTurn,parsePeer} from '../src/agent.mjs';
 import {completion} from '../src/providers.mjs';
 import {repeatedReply} from '../src/dialogue.mjs';
+import {formatDuration,parseAutoCommand,validModeDuration} from '../src/duration.mjs';
+import {formatLetterCase,letterCase,parseLetterCase} from '../src/preferences.mjs';
 
 let mf,env,now,sent,models,modelRequests,cid,seq;
 const owner='101',peer='202',connection='fixture-connection';
@@ -25,7 +27,7 @@ beforeEach(async()=>{
  now=1800000000000;seq=0;sent=[];models=[];modelRequests=[];
  // Legacy behavior fixtures bypass waiting; dedicated queue tests use 4000ms.
  env.PEER_DEBOUNCE_MS='0';delete env.FREE_ONLY;delete env.SLEEP;delete env.AI;delete env.WORKERS_AI_ENABLED;delete env.WORKERS_AI_MODEL;delete env.WORKERS_AI_TIMEOUT_MS;
- for(const table of ['owner_requests','owner_tasks','connections','chats','messages','facts','inbox','proposals','outbox','usage','provider_usage','chat_style','chat_changes','chat_facts','background_jobs','fact_extraction','conversation_state','chat_aliases','providers','audit'])await run(env,'DELETE FROM '+table);
+ for(const table of ['owner_requests','owner_tasks','letter_case_preferences','connections','chats','messages','facts','inbox','proposals','outbox','usage','provider_usage','chat_style','chat_changes','chat_facts','background_jobs','fact_extraction','conversation_state','chat_aliases','providers','audit'])await run(env,'DELETE FROM '+table);
  await run(env,'UPDATE settings SET paused=0,lock_token=NULL,lock_until=0,cleanup_at=0');env.NOW=()=>now;
  env.FETCH=async(url,options={})=>{
   if(url.includes('/chat/completions')){modelRequests.push({url,body:JSON.parse(options.body)});const m=models.shift();if(typeof m==='function')return m(url,options);if(m instanceof Response)return m;if(m instanceof Error)throw m;return response({choices:[{message:m||reply('Привет, я здесь.')}],usage:{total_tokens:25}});}
@@ -525,14 +527,14 @@ test('style phrasing distinguishes settings from quoted and one-off instructions
  assert.equal(modelRequests.length,0);
 });
 
-for(const minutes of [120,720]){
+for(const minutes of [120,720,43800]){
  test('confirmed '+minutes+' minute auto mode uses the same quiet window',async()=>{
   await enabled('draft');
   const p=await createProposal(env,'duration-'+minutes,cid,'mode',{mode:'auto',minutes,instruction:''});
   await acceptUpdate(env,click('yes:'+p.id));
   await drain(env);
   assert.equal((await one(env,'SELECT until_at FROM chats WHERE id=?',[cid])).until_at,now+minutes*60000);
-  if(minutes===720)now+=121*60000;
+  if(minutes>120)now+=(minutes-1)*60000;
   env.PEER_DEBOUNCE_MS='4000';
   const waits=[];
   env.SLEEP=async ms=>{waits.push(ms);now+=ms;};
@@ -578,4 +580,156 @@ test('extending the same active mode to 720 minutes keeps an already queued repl
  now+=2000;
  await drain(env);
  assert.equal((await one(env,"SELECT state FROM outbox WHERE id='ready-on-renewal'")).state,'sent');
+});
+
+for (const [command, minutes, label] of [
+ ['автоответчик в чате fade 730 часов', 43800, '730 часов'],
+ ['включи автоответ для Кати на 720 минут', 720, '720 минут'],
+ ['поставь для Кати автоответчик на 12 часов', 720, '12 часов'],
+ ['включи автоответ на 2 часа 30 минут', 150, '2 часа 30 минут'],
+ ['включи автоответ на 1,5 часа', 90, '1 час 30 минут'],
+ ['включи автоответ на полчаса', 30, '30 минут'],
+ ['включи автоответ на сутки', 1440, '24 часа'],
+ ['включи автоответ на двенадцать часов', 720, '12 часов'],
+ ['включи автоответ', 120, '2 часа'],
+ ['автоответчик на 744 ч', 44640, '744 часа'],
+]) test('duration: '+command,()=>{
+ const duration=parseAutoCommand(command);
+ assert.equal(duration.minutes,minutes);
+ assert.equal(validModeDuration(minutes),true);
+ assert.equal(formatDuration(duration.minutes,duration.unit),label);
+});
+
+for (const command of ['на 745 часов','на -3 часа','на 0 минут','на 730','на неделю','на 0,2 минуты','на 2 часа 75 минут','на 730 секунд']) {
+ test('invalid duration never becomes the default: '+command,()=>{
+  assert.equal(validModeDuration(parseAutoCommand('включи автоответ '+command)?.minutes),false);
+ });
+}
+for (const command of ['как включить автоответ на 730 часов?', 'не включай автоответ на 730 часов', 'отключи автоответ', 'он сказал включи автоответ']) {
+ test('duration parser ignores: '+command,()=>assert.equal(parseAutoCommand(command),null));
+}
+
+test('730 hours survives an owner clarification, preview, approval and expiry',async()=>{
+ await namedChat('fade','fade_test');
+ await acceptUpdate(env,privateUpdate('автоответчик в чате 730 часов'));
+ await drain(env);
+ assert.match(sent.at(-1).body.text,/Для какого чата включить автоответ на 730 часов/);
+ assert.equal((await one(env,'SELECT mode FROM chats')).mode,'draft');
+ assert.equal((await all(env,'SELECT * FROM proposals')).length,0);
+ await acceptUpdate(env,privateUpdate('Фаде'));
+ await drain(env);
+ const proposal=await one(env,'SELECT * FROM proposals');
+ assert.equal(JSON.parse(proposal.payload).minutes,43800);
+ assert.match(sent.find(s=>s.body.reply_markup?.inline_keyboard[0][0].callback_data==='yes:'+proposal.id).body.text,/на 730 часов/);
+ assert.equal((await one(env,'SELECT mode FROM chats')).mode,'draft');
+ await acceptUpdate(env,click('yes:'+proposal.id));
+ await drain(env);
+ assert.match(sent.at(-1).body.text,/включены автоответы на 730 часов/);
+ const expiry=now+43800*60000;
+ assert.equal((await one(env,'SELECT until_at FROM chats')).until_at,expiry);
+ await acceptUpdate(env,privateUpdate('/status'));
+ await drain(env);
+ assert.match(sent.at(-1).body.text,/ещё 730 часов/);
+ assert.equal(modelRequests.length,0);
+ assert.equal(sent.filter(s=>String(s.body.chat_id)===peer).length,0);
+ now=expiry;
+ await acceptUpdate(env,business('Как дела?'));
+ await drain(env);
+ assert.equal(modelRequests.length,0);
+ assert.equal(sent.filter(s=>String(s.body.chat_id)===peer).length,0);
+});
+
+test('hour-based mode from inside a business chat proposes the current chat',async()=>{
+ await namedChat('fade','fade_test');
+ await acceptUpdate(env,business('панда, включи автоответ на 730 часов',owner));
+ await drain(env);
+ const proposal=await one(env,'SELECT * FROM proposals');
+ assert.equal(proposal.scope,cid);
+ assert.equal(JSON.parse(proposal.payload).minutes,43800);
+ assert.equal(modelRequests.length,0);
+});
+
+test('ambiguous target does not select a duplicate title, exact username resolves it',async()=>{
+ await namedChat('fade','fade_test');
+ await run(env,"INSERT INTO chats(id,telegram_id,title,kind) VALUES('duplicate','999','fade','private')");
+ await ownerTurn(env,{id:'ambiguous',text:'включи автоответ на 730 часов'},Date.now()+20000);
+ assert.equal((await all(env,'SELECT * FROM proposals')).length,0);
+ assert.match(await ownerTurn(env,{id:'disambiguated',text:'@fade_test'},Date.now()+20000),/Предложение/);
+ assert.equal((await one(env,'SELECT scope FROM proposals')).scope,cid);
+});
+
+test('global lowercase takes effect immediately and applies to newly connected chats',async()=>{
+ await acceptUpdate(env,privateUpdate('запомни общайся с маленькой буквы во всех чатах'));
+ await drain(env);
+ assert.match(sent.at(-1).body.text,/^буду начинать фразы со строчной буквы во всех чатах/);
+ assert.equal(modelRequests.length,0);
+ await namedChat('fade','fade_test');
+ assert.equal(await letterCase(env,cid),'lower');
+ models.push(reply('Хорошо. Как твой день?'));
+ await acceptUpdate(env,privateUpdate('как дела?'));
+ await drain(env);
+ assert.equal(sent.at(-1).body.text,'хорошо. как твой день?');
+});
+
+test('lowercase applies to real peer replies and local override preserves another chat',async()=>{
+ await namedChat('fade','fade_test');
+ await run(env,"UPDATE chats SET mode='auto' WHERE id=?",[cid]);
+ await ownerTurn(env,{id:'global-case',text:'пиши с маленькой буквы во всех чатах'},Date.now()+20000);
+ models.push(peerReply('Вот это поворот! Давай рассказывай.'));
+ await acceptUpdate(env,business('У меня новости',peer,{chat:{id:Number(peer),type:'private',first_name:'fade',username:'fade_test'}}));
+ await drain(env);
+ assert.equal(sent.find(s=>String(s.body.chat_id)===peer).body.text,'вот это поворот! давай рассказывай.');
+ await ownerTurn(env,{id:'override',text:'пиши с большой буквы в чате фаде'},Date.now()+20000);
+ assert.equal(await letterCase(env,cid),'normal');
+ assert.equal(await letterCase(env,'future-chat'),'lower');
+ assert.equal((await all(env,'SELECT * FROM chat_style')).length,0);
+});
+
+test('uppercase correction replaces stale style clarification, then Cyrillic selects fade',async()=>{
+ await namedChat('fade','fade_test');
+ await ownerTurn(env,{id:'old-style',text:'общайся как будто ты гангстер'},Date.now()+20000);
+ const clarification=await ownerTurn(env,{id:'case-correction',text:'так ты все ровно заглавной пишешь'},Date.now()+20000);
+ assert.match(clarification,/В каком чате поменять регистр/);
+ const applied=await ownerTurn(env,{id:'alias',text:'фаде'},Date.now()+20000);
+ assert.match(applied,/^буду.*fade/);
+ assert.equal(await letterCase(env,cid),'lower');
+ assert.equal((await all(env,'SELECT * FROM chat_style')).length,0);
+ assert.equal((await all(env,'SELECT * FROM owner_tasks')).length,0);
+ assert.equal(modelRequests.length,0);
+});
+
+test('chat follow-up for general style resolves Cyrillic without greeting',async()=>{
+ await namedChat('fade','fade_test');
+ await ownerTurn(env,{id:'awaiting-style',text:'общайся в стиле старого детектива'},Date.now()+20000);
+ assert.match(await ownerTurn(env,{id:'choose-fade',text:'фаде'},Date.now()+20000),/Сохранила стиль/);
+ assert.equal((await one(env,'SELECT tone FROM chat_style WHERE chat_id=?',[cid])).tone,'в стиле старого детектива');
+ assert.equal(modelRequests.length,0);
+});
+
+test('letter case formatting preserves links, handles, commands and acronyms',()=>{
+ assert.equal(formatLetterCase('Привет! https://Host/A. @Test\nОк. /Status\nNVIDIA работает.', 'lower'),
+  'привет! https://Host/A. @Test\nок. /Status\nNVIDIA работает.');
+ assert.equal(parseLetterCase('почему ты пишешь с маленькой буквы?'),null);
+ assert.equal(parseLetterCase('отправь: «пиши с маленькой буквы»'),null);
+ assert.equal(parseLetterCase('запомни общайся с маленькой буквы').value,'lower');
+});
+
+test('a peer cannot set letter case or a long-duration owner task',async()=>{
+ await namedChat('fade','fade_test');
+ await acceptUpdate(env,business('панда, пиши с маленькой буквы во всех чатах'));
+ await acceptUpdate(env,business('панда, включи автоответ на 730 часов'));
+ models.push(peerReply('Ты хочешь поговорить об автоответах?'));
+ await drain(env);
+ assert.equal((await all(env,'SELECT * FROM letter_case_preferences')).length,0);
+ assert.equal((await all(env,'SELECT * FROM owner_tasks')).length,0);
+ assert.equal((await all(env,"SELECT * FROM proposals WHERE kind='mode'")).length,0);
+});
+
+test('model routing notes cannot be sent as a peer auto-reply',async()=>{
+ await enabled('auto');
+ models.push(peerReply('User wants a reply. No action needed, just respond.'));
+ await acceptUpdate(env,business('Ты как?'));
+ await drain(env);
+ assert.equal(sent.filter(s=>String(s.body.chat_id)===peer).length,0);
+ assert.ok(await one(env,"SELECT * FROM audit WHERE kind='invalid_peer_output'"));
 });

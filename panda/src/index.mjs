@@ -1,7 +1,9 @@
+import {formatDuration,MODE_DURATION_ERROR,validModeDuration} from './duration.mjs';
+import {formatLetterCase,letterCase} from './preferences.mjs';
 import {background} from './background.mjs';
 import {one,all,run,batch,key,clock,OWNER,getChat,putMessage,queue,stop,maintenance,audit,createProposal,recentReplies,budgets,snapshotChat} from './store.mjs';
 import {ownerTurn,peerTurn,proposalCard,PEER_SYSTEM,parsePeer} from './agent.mjs';
-import {completion,diagnostic,providerConfig,providerNames,ModelUnavailable,parseJSON} from './providers.mjs';
+import {completion,providerConfig,providerNames,ModelUnavailable,parseJSON} from './providers.mjs';
 import {telegram,setAvatar} from './telegram.mjs';
 import {repeatedReply} from './dialogue.mjs';
 
@@ -22,7 +24,7 @@ async function chatButtons(env,eventId){
 }
 async function status(env,eventId){
  const now=clock(env),day=new Date(now).toISOString().slice(0,10),[chats,usage,uncertain,s,connections]=await Promise.all([all(env,'SELECT title,mode,until_at FROM chats'),one(env,'SELECT * FROM usage WHERE day=?',[day]),one(env,"SELECT count(*) AS n FROM outbox WHERE state='unknown'"),one(env,'SELECT paused FROM settings WHERE id=1'),one(env,'SELECT count(*) AS n FROM connections WHERE enabled=1')]);
- await queue(env,'reply:'+eventId,`Панда работает. ${s.paused?'Автоответы остановлены.':''}\n${connections.n?'Профиль подключён.':'Сервер ещё не получил подключение профиля.'}\n${chats.map(c=>`${c.title}: ${c.mode==='off'||c.until_at<=now?'выключено':(c.mode==='auto'?'автоответ':'черновики')+' · ещё '+Math.ceil((c.until_at-now)/60000)+' мин.'}`).join('\n')||'Сообщения выбранных чатов пока не поступили.'}\nОбращений к моделям сегодня: ${(await budgets(env)).filter(b=>providerConfig(env).some(p=>p.key&&p.name===b.provider)).map(b=>b.provider+': остаток '+b.requests+' запросов / '+b.tokens+' токенов').join('; ')}.\nОтправок с неизвестным результатом: ${uncertain.n}.`);
+ await queue(env,'reply:'+eventId,`Панда работает. ${s.paused?'Автоответы остановлены.':''}\n${connections.n?'Профиль подключён.':'Сервер ещё не получил подключение профиля.'}\n${chats.map(c=>`${c.title}: ${c.mode==='off'||c.until_at<=now?'выключено':(c.mode==='auto'?'автоответ':'черновики')+' · ещё '+formatDuration(Math.ceil((c.until_at-now)/60000))}`).join('\n')||'Сообщения выбранных чатов пока не поступили.'}\nОбращений к моделям сегодня: ${(await budgets(env)).filter(b=>providerConfig(env).some(p=>p.key&&p.name===b.provider)).map(b=>b.provider+': остаток '+b.requests+' запросов / '+b.tokens+' токенов').join('; ')}.\nОтправок с неизвестным результатом: ${uncertain.n}.`);
 }
 async function enableAutoHere(env,scope){
  const c=await getChat(env,scope);
@@ -141,11 +143,12 @@ async function applyProposal(env,event,p){
  if(p.scope!==OWNER&&(!c||c.revision!==p.revision))return 'В чате уже появились новые сообщения или изменился режим. Это предложение устарело.';
  const updates=[["UPDATE proposals SET status='accepted' WHERE id=? AND status='pending'",[p.id]]];
  if(p.kind==='mode'){
+  if(!validModeDuration(payload.minutes))return MODE_DURATION_ERROR;
   const conn=await one(env,'SELECT * FROM connections WHERE id=? AND enabled=1',[c.connection_id]);
   if(!conn||!JSON.parse(conn.rights).can_reply)return 'В настройках подключения нужно разрешить ответы.';
   await snapshotChat(env,c.id);
   updates.push(['UPDATE settings SET paused=0 WHERE id=1'],['UPDATE chats SET mode=?,consent=1,until_at=?,instruction=?,pause_until=0,revision=revision+CASE WHEN mode=? AND consent=1 AND until_at>? AND instruction=? AND pause_until<=? THEN 0 ELSE 1 END WHERE id=?',[payload.mode,now+payload.minutes*60000,payload.instruction,payload.mode,now,payload.instruction,now,c.id]]);
-  await batch(env,updates);return `В чате «${c.title}» включены ${payload.mode==='auto'?'автоответы':'черновики'} на ${payload.minutes} мин. Новые обязательства — через тебя. Остановить: /stop.`;
+  await batch(env,updates);return `В чате «${c.title}» включены ${payload.mode==='auto'?'автоответы':'черновики'} на ${formatDuration(payload.minutes,payload.unit,true)} Новые обязательства — через тебя. Остановить: /stop.`;
  }
  let method='sendMessage',body,mode='approved';
  if(p.kind==='avatar'){
@@ -164,6 +167,7 @@ async function callback(env,event){
  else if(op==='yes')text=await applyProposal(env,event,await one(env,'SELECT * FROM proposals WHERE id=?',[id]));
  else if(op==='no'){await run(env,"UPDATE proposals SET status='cancelled' WHERE id=? AND status='pending'",[id]);text='Отменено.';}
  else if(op==='stop')text='Автоответы остановлены.';
+ text=formatLetterCase(text,await letterCase(env));
  try{await telegram(env,'answerCallbackQuery',{callback_query_id:event.callback_id,text:text.slice(0,160)});}catch{}
  if(!['draft','auto'].includes(op))await queue(env,'reply:'+event.id,text);
 }
@@ -207,7 +211,7 @@ async function handle(env,event,deadline){
   await putMessage(env,{id:'user:'+event.id,scope:OWNER,role:'user',body:event.text||'[фото]',manual:1});
   text=await ownerTurn(env,event,deadline);
  }
- if(text){await queue(env,'reply:'+event.id,text);await putMessage(env,{id:'assistant:'+event.id,scope:OWNER,role:'assistant',body:text});}
+ if(text){text=formatLetterCase(text,await letterCase(env,event.target||OWNER));await queue(env,'reply:'+event.id,text);await putMessage(env,{id:'assistant:'+event.id,scope:OWNER,role:'assistant',body:text});}
 }
 export async function canSend(env,row){
  const now=clock(env);if(row.expires_at<=now)return false;if(row.mode==='owner')return true;
@@ -266,7 +270,10 @@ export async function drain(env,deadline=Date.now()+24000){
    try{await handle(env,event,deadline-1000);await finish();}
    catch(error){
     await audit(env,error.kind||'turn_failed');
-    await queue(env,'error:'+row.id,diagnostic(error)+(event.type==='peer'?'\nОтвет собеседнику не отправлен.':''));
+    const text=error instanceof ModelUnavailable
+     ? (event.type==='peer'?'Модели сейчас недоступны. Собеседнику ничего не отправила.':'Модели сейчас недоступны. Попробуй чуть позже. /stop и /status работают.')
+     : 'Не удалось закончить этот шаг. /stop и /status работают.';
+    await queue(env,'error:'+row.id,formatLetterCase(text,await letterCase(env,event.target||event.scope)));
     await finish();
    }
    await flush(env,deadline);

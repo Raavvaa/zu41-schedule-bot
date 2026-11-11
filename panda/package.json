@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test --test-concurrency=1 test/*.test.mjs",
-    "check": "node --check src/index.mjs && node --check src/agent.mjs && node --check src/store.mjs && node --check src/providers.mjs && node --check deploy.mjs && node --check src/dialogue.mjs && node --check diagnose.mjs && node --check src/router.mjs && node --check src/background.mjs && node --check src/brain.mjs && node --check owner-request.mjs",
+    "check": "node --check src/index.mjs && node --check src/agent.mjs && node --check src/store.mjs && node --check src/providers.mjs && node --check deploy.mjs && node --check src/dialogue.mjs && node --check diagnose.mjs && node --check src/router.mjs && node --check src/background.mjs && node --check src/brain.mjs && node --check src/duration.mjs && node --check src/preferences.mjs && node --check owner-request.mjs",
     "live": "node test/live.mjs"
   },
   "devDependencies": {

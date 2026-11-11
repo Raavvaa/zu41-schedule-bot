@@ -1,3 +1,4 @@
+import {MODE_DURATION_ERROR,validModeDuration} from './duration.mjs';
 import {badOwnerText} from './brain.mjs';
 import {all,getChat,clock,stop,putFact,forget,changeStyle,undoChat,chatContext,saveConversationState,run,enqueueBackground} from './store.mjs';
 export const actions=['set_chat_style','enable_autoreply','enable_drafts','stop','remember','forget','send_once','update_conversation_note','answer_owner','undo_last','none'];
@@ -16,7 +17,7 @@ export async function executeRoute(env,x,event,proposal,extend=extendChatAction)
  const c=await getChat(env,target);if(!c||c.kind!=='private')return {done:true,text:'Выбери подключённый личный чат.'};
  if(x.params.chat&&x.params.chat!==target)return {done:true,text:'Поручение относится только к текущему чату. Уточни адресата.'};
  if(x.action==='send_once'){const text=x.params.draft_text;if(typeof text!=='string'||!text.trim()||text.length>2500||badOwnerText(text))return {error:'Нужен полный готовый текст для собеседника, без служебных заметок и пустого предисловия.'};return {proposal:true,text:await proposal(env,event,target,'send',{text})};}
- if(['enable_autoreply','enable_drafts'].includes(x.action)){const minutes=x.params.duration??120;if(!Number.isInteger(minutes)||minutes<1||minutes>720)return {done:true,text:'Укажи срок от 1 до 720 минут.'};return {proposal:true,text:await proposal(env,event,target,'mode',{mode:x.action==='enable_autoreply'?'auto':'draft',minutes,instruction:c.instruction})};}
+ if(['enable_autoreply','enable_drafts'].includes(x.action)){const minutes=x.params.duration??120;if(!validModeDuration(minutes))return {done:true,text:MODE_DURATION_ERROR};return {proposal:true,text:await proposal(env,event,target,'mode',{mode:x.action==='enable_autoreply'?'auto':'draft',minutes,instruction:c.instruction})};}
  if(x.action==='stop'){await stop(env,target);return {done:true,text:'Остановила ответы в этом чате.'};}
  if(x.action==='remember'){if(typeof x.params.fact!=='string'||!event.text.includes(x.params.fact))return {done:true,text:'Уточни точный факт, который нужно запомнить.'};await putFact(env,{scope:target,key:x.params.key||'Заметка',value:x.params.fact,source:event.id});await run(env,'INSERT OR IGNORE INTO chat_facts(chat_id,fact,source,source_message_id,confidence,created_at) VALUES(?,?,?,?,?,?)',[target,x.params.fact,'owner','user:'+event.id,'high',clock(env)]);await enqueueBackground(env,target,'embeddings');return {done:true,text:'Запомнила в этом чате.'};}
  if(x.action==='forget'){await forget(env,target,x.params.key||'Заметка');return {done:true,text:'Удалила заметку в этом чате.'};}

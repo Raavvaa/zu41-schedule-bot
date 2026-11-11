@@ -1,6 +1,7 @@
 // Durable owner task orchestration. Text from peers never enters this module.
 import {one,run,clock,chatContext,getChat,queue} from './store.mjs';
-import {completion,parseJSON} from './providers.mjs';
+import {completion} from './providers.mjs';
+import {formatLetterCase,letterCase} from './preferences.mjs';
 export const replyIntent=text=>/(?:ответь|ответить)(?=\s|$)|(?:нужно|хочу|пожалуйста|чтобы).{0,70}ответ(?:ил|ила)(?=\s|$)|продолжи\s+(?:тему|разговор)/iu.test(String(text))&&!/^(?:почему|зачем|как|когда)(?=\s|$)/iu.test(String(text));
 export const continuation=text=>/^(?:ну|да|давай|сделай|продолжай|может сделаешь|так сделай|ответить на его последние сообщения)[.!?\s]*$/iu.test(String(text).trim());
 export const badOwnerText=text=>!String(text||'').trim()||/^(?:user\s+(?:wants|asks|requests)|analysis\s*:)|no action needed|just respond|we cannot send|tool_call|claims_action|^(?:владелец|пользователь)\s+(?:хочет|просит|попросил)|^я\s+(?:уже\s+)?(?:отправил|отправила|включил|включила)/iu.test(String(text))||/^(?:конечно[,!]?\s*)?(?:вот (?:ответ|текст|сообщение)|готово|сейчас (?:напишу|отправлю))[.!:\s]*$/iu.test(String(text).trim());
@@ -28,13 +29,12 @@ export async function replyTask(env,event,{chats,target,pending,system,parseRepl
  let parsed;
  for(let attempt=0;attempt<2;attempt++){const r=await completion(env,messages,{json:true,deadline});parsed=parseReply(r.message.content);if(parsed?.reply?.trim()&&!badOwnerText(parsed.reply))break;parsed=null;messages.push({role:'system',content:'Нужен полный JSON заданного формата с непустым reply — самим ответом собеседнику, не описанием задачи.'});}
  if(!parsed){await saveTask(env,event,{target,instruction,status:'awaiting_retry'});return {handled:true,text:'Чат «'+c.title+'» найден, но модель не составила корректный черновик. Ничего не отправлено. Можешь дать точный текст или написать «попробуй ещё».'};}
- const receipt=await proposal(env,{...event,target},target,'send',{text:parsed.reply});
+ const receipt=await proposal(env,{...event,target},target,'send',{text:formatLetterCase(parsed.reply,await letterCase(env,target))});
  await saveTask(env,event,{target,instruction,status:'preview'});
  return {handled:true,text:receipt};
 }
 
-export function parseAutoCommand(text){const t=String(text||'').toLowerCase().replace(/ё/g,'е');if(!/автоответ/u.test(t)||!/(?:включи|вруби|врубай|поставь|запусти|активируй|сделай|настрой)/u.test(t)||/(?:выключи|отключи|останови)/u.test(t))return null;const m=t.match(/(\d{1,4})\s*(час[\p{L}]*|ч(?=\s|$)|мин[\p{L}]*)/u);return {minutes:m?Number(m[1])*(m[2].startsWith('мин')?1:60):/двенадцать\s+час/u.test(t)?720:/сутки/u.test(t)?1440:/пол\s*часа/u.test(t)?30:120};}
-
+export {parseAutoCommand} from './duration.mjs';
 
 // Resolve explicit, ongoing style directions before the language model sees them.
 export function parseStyleDirection(text){
