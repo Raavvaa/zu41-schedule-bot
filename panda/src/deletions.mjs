@@ -8,21 +8,19 @@ const media = {
  video_note:['sendVideoNote','video_note'], sticker:['sendSticker','sticker']
 };
 
-export const deletionWatch = (env,scope) => one(env,'SELECT scope FROM deletion_watch WHERE scope=?',[scope]);
+const watchEnabled = "EXISTS(SELECT 1 FROM deletion_watch WHERE scope='global:on')";
+export const deletionWatch = env => one(env,"SELECT scope FROM deletion_watch WHERE scope='global:on'");
 
-export async function setDeletionWatch(env,scope,enabled){
- if(enabled){
-  const result=await run(env,`INSERT OR IGNORE INTO deletion_watch(scope)
-   SELECT chats.id FROM chats JOIN connections ON connections.id=chats.connection_id
-   WHERE chats.id=? AND connections.enabled=1 AND ${privateChat}`,[scope]);
-  return result.meta.changes>0||!!await deletionWatch(env,scope);
- }
- await batch(env,[
-  ['DELETE FROM deletion_watch WHERE scope=?',[scope]],
-  ['DELETE FROM deletion_snapshots WHERE scope=?',[scope]],
-  ["UPDATE outbox SET state='cancelled',payload='{}' WHERE id GLOB ? AND state='pending'",['deletion:'+scope+':*']]
- ]);
- return true;
+export async function setDeletionWatch(env,enabled){
+ const changes=[
+  ['DELETE FROM deletion_watch'],
+  ['INSERT INTO deletion_watch(scope) VALUES(?)',[enabled?'global:on':'global:off']]
+ ];
+ if(!enabled)changes.push(
+  ['DELETE FROM deletion_snapshots'],
+  ["UPDATE outbox SET state='cancelled',payload='{}' WHERE id GLOB 'deletion:*' AND state='pending'"]
+ );
+ await batch(env,changes);
 }
 
 export async function captureDeletionSnapshot(env,scope,m){
@@ -38,8 +36,8 @@ export async function captureDeletionSnapshot(env,scope,m){
  const fileId=typeof file?.file_id==='string'?file.file_id:null;
  if(!body&&!fileId)return;
  await run(env,`INSERT INTO deletion_snapshots(scope,message_id,at,body,method,field,file_id)
-  SELECT ?,?,?,?,?,?,? FROM chats JOIN deletion_watch ON deletion_watch.scope=chats.id
-  WHERE chats.id=? AND ${privateChat}
+  SELECT ?,?,?,?,?,?,? FROM chats JOIN connections ON connections.id=chats.connection_id
+  WHERE chats.id=? AND connections.enabled=1 AND ${privateChat} AND ${watchEnabled}
    AND NOT EXISTS(SELECT 1 FROM outbox WHERE id=?)
   ON CONFLICT(scope,message_id) DO UPDATE SET body=excluded.body,method=excluded.method,field=excluded.field,file_id=excluded.file_id
   WHERE ?=1`,[scope,m.message_id,at,body,media[type]?.[0]??null,media[type]?.[1]??null,fileId,scope,'deletion:'+scope+':'+m.message_id,m.edit_date?1:0]);
@@ -48,9 +46,9 @@ export async function captureDeletionSnapshot(env,scope,m){
 export async function recordDeletions(env,scope,updateId,messageIds){
  const now=clock(env);
  const ids=[...new Set(messageIds)].filter(Number.isSafeInteger);
- const chat=await one(env,`SELECT title FROM chats JOIN deletion_watch ON scope=chats.id
+ const chat=await one(env,`SELECT title FROM chats
   JOIN connections ON connections.id=chats.connection_id
-  WHERE chats.id=? AND connections.enabled=1 AND ${privateChat}`,[scope]);
+  WHERE chats.id=? AND connections.enabled=1 AND ${privateChat} AND ${watchEnabled}`,[scope]);
  const items=[['INSERT INTO audit(kind,at) VALUES(?,?)',[chat?'deletion_watch_received':'deletion_watch_inactive',now]],['INSERT OR IGNORE INTO inbox(id,scope,payload,state,at) VALUES(?,?,?,?,?)',[updateId,OWNER,'{}','done',now]],
   ["UPDATE chats SET revision=revision+1,summary='' WHERE id=?",[scope]],
   ['DELETE FROM conversation_state WHERE chat_id=?',[scope]]];
@@ -77,6 +75,6 @@ export async function recordDeletions(env,scope,updateId,messageIds){
 }
 
 function notice(id,method,body,now){
- return ["INSERT OR IGNORE INTO outbox(id,scope,method,payload,mode,revision,expires_at,at) VALUES(?,?,?,?,'owner',0,?,?)",
+ return ["INSERT OR IGNORE INTO outbox(id,scope,method,payload,mode,revision,expires_at,at) SELECT ?,?,?,?,'owner',0,?,? WHERE EXISTS(SELECT 1 FROM deletion_watch WHERE scope='global:on')",
   [id,OWNER,method,JSON.stringify(body),now+120000,now]];
 }

@@ -50,10 +50,10 @@ export async function stop(env,scope=null){
  const now=clock(env),where=scope?' WHERE id=?':'',args=scope?[scope]:[];
  const items=[[`UPDATE chats SET mode='off',revision=revision+1${where}`,args],[`UPDATE proposals SET status='cancelled' WHERE status='pending'${scope?' AND scope=?':''}`,args],[`UPDATE outbox SET state='cancelled' WHERE state='pending' AND mode<>'owner'${scope?' AND scope=?':''}`,args]];
  items.push(['DELETE FROM owner_tasks WHERE owner_id=?'+(scope?' AND target=?':''),scope?[String(env.OWNER_ID),scope]:[String(env.OWNER_ID)]]);
- items.push(['DELETE FROM deletion_watch'+(scope?' WHERE scope=?':''),args],
+ items.push(
   ['DELETE FROM deletion_snapshots'+(scope?' WHERE scope=?':''),args],
   ["UPDATE outbox SET state='cancelled',payload='{}' WHERE state='pending' AND id GLOB ?",[scope?'deletion:'+scope+':*':'deletion:*']]);
- if(!scope)items.unshift(['UPDATE settings SET paused=1 WHERE id=1']);
+ if(!scope)items.unshift(['UPDATE settings SET paused=1 WHERE id=1'],['DELETE FROM deletion_watch'],["INSERT INTO deletion_watch(scope) VALUES('global:off')"]);
  await batch(env,items);await audit(env,'owner_stop');return now;
 }
 export async function createProposal(env,eventId,scope,kind,payload){

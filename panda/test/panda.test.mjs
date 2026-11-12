@@ -739,7 +739,7 @@ test('model routing notes cannot be sent as a peer auto-reply',async()=>{
 const deletionUpdate=(...message_ids)=>({update_id:++seq,deleted_business_messages:{business_connection_id:connection,chat:{id:Number(peer)},message_ids}});
 test('deletion journal reports text and media once, privately and outside model history',async()=>{
  await enabled();
- await acceptUpdate(env,click('watch:'+cid));
+ await acceptUpdate(env,click('watch:all'));
  await drain(env);
  const original=business('ordinary text'),photo=business(undefined,peer,{caption:'ordinary photo',photo:[{file_id:'small'},{file_id:'large'}]});
  await acceptUpdate(env,original);
@@ -761,7 +761,7 @@ test('deletion journal is opt-in and excludes flagged temporary or protected med
  await enabled();
  await acceptUpdate(env,business('before opt-in'));
  assert.equal((await all(env,'SELECT * FROM deletion_snapshots')).length,0);
- await acceptUpdate(env,click('watch:'+cid));
+ await acceptUpdate(env,click('watch:all'));
  await drain(env);
  const temp=business(undefined,peer,{caption:'private caption',video:{file_id:'never-store',ttl_seconds:10}});
  await acceptUpdate(env,temp);
@@ -777,21 +777,21 @@ test('deletion journal is opt-in and excludes flagged temporary or protected med
 
 test('stopping the chat removes deletion snapshots and cancels pending notifications',async()=>{
  await enabled();
- await acceptUpdate(env,click('watch:'+cid));
+ await acceptUpdate(env,click('watch:all'));
  await drain(env);
  const original=business('clear on stop');
  await acceptUpdate(env,original);
  await acceptUpdate(env,deletionUpdate(original.update_id));
  await stop(env,cid);
  await drain(env);
- assert.equal((await all(env,'SELECT * FROM deletion_watch')).length,0);
+ assert.ok(await one(env,"SELECT scope FROM deletion_watch WHERE scope='global:on'"));
  assert.equal((await all(env,'SELECT * FROM deletion_snapshots')).length,0);
  assert.ok(!sent.some(item=>item.body.text?.includes('clear on stop')));
 });
 
 test('deletion journal works with auto-replies off and after their timer expires',async()=>{
  await connect();
- await acceptUpdate(env,click('watch:'+cid));
+ await acceptUpdate(env,click('watch:all'));
  await drain(env);
  assert.ok(sent.some(item=>item.body.text?.includes('Журнал удалений включён')));
  const first=business('journal only');
@@ -807,4 +807,30 @@ test('deletion journal works with auto-replies off and after their timer expires
  await drain(env);
  assert.ok(sent.some(item=>item.body.text?.endsWith('after timeout')));
  assert.equal(modelRequests.length,0);
+});
+
+test('global deletion setting covers new chats and survives migrations when switched off',async()=>{
+ await connect();
+ const migration=await readFile(new URL('../migrations/0011_global_deletion_watch.sql',import.meta.url),'utf8');
+ await env.DB.exec(migration.replace(/\n/g,' '));
+ await acceptUpdate(env,privateUpdate('/chats'));
+ await drain(env);
+ assert.equal(sent.at(-1).body.reply_markup.inline_keyboard[0][0].callback_data,'unwatch:all');
+ const newChat=business('new chat text','303',{chat:{id:303,type:'private',first_name:'New'}});
+ await acceptUpdate(env,newChat);
+ const deleted=deletionUpdate(newChat.update_id);
+ deleted.deleted_business_messages.chat.id=303;
+ await acceptUpdate(env,deleted);
+ await drain(env);
+ assert.ok(sent.some(item=>item.body.text?.endsWith('new chat text')));
+ await acceptUpdate(env,click('unwatch:all'));
+ await drain(env);
+ await env.DB.exec(migration.replace(/\n/g,' '));
+ assert.ok(await one(env,"SELECT scope FROM deletion_watch WHERE scope='global:off'"));
+ const later=business('after global off');
+ await acceptUpdate(env,later);
+ await acceptUpdate(env,deletionUpdate(later.update_id));
+ await drain(env);
+ assert.ok(!sent.some(item=>item.body.text?.endsWith('after global off')));
+ assert.equal((await all(env,'SELECT * FROM deletion_snapshots')).length,0);
 });

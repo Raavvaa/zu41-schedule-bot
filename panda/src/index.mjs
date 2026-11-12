@@ -19,9 +19,15 @@ export const stopCommand=text=>stopAllCommand(text)||/^(?:\/stop(?:@\w+)?|сто
 const startText='Я Панда 🐼 Можно просто поговорить, попросить запомнить важное или поручить дело.\n\nЧтобы я помогала в твоих личных чатах: включи Secretary/Business Mode у этого бота в @BotFather → Bot Settings, затем Telegram → Настройки → Изменить → Автоматизация чатов → выбери меня и нужные чаты. После подключения напиши в нужном чате «панда, помогай здесь» или открой /chats.\n\nСначала покажу черновики тебе. Автоответ включается отдельно и на время. «панда, стоп» или /stop останавливает ответы. Голосовые не обрабатываю.\n/status — состояние, /memory — память, /chats — подключённые чаты.';
 
 async function chatButtons(env,eventId){
- const chats=await all(env,'SELECT * FROM chats ORDER BY title LIMIT 20');
- if(!chats.length){const c=await one(env,'SELECT count(*) AS n FROM connections WHERE enabled=1');await queue(env,'reply:'+eventId,(c.n?'Профиль подключён, но сообщения выбранных чатов ещё не поступили.':'Сервер ещё не получил подключение профиля.')+' Если над нужным чатом уже написано «Panda управляет этим чатом», напиши именно там «панда, помогай здесь». Предложение придёт сюда, в личку с Пандой. По одному @имени я не могу открыть чужую личную переписку.');return;}
- await queue(env,'reply:'+eventId,'Выбери чат. Черновики и автоответ включаются только после твоего подтверждения.',{markup:{inline_keyboard:chats.map(c=>[{text:c.title.slice(0,45)+' · '+c.mode,callback_data:'chat:'+c.id}])}});
+ const [chats,watching]=await Promise.all([all(env,'SELECT * FROM chats ORDER BY title LIMIT 20'),deletionWatch(env)]);
+ const journal=watching?'включён':'выключен';
+ await queue(env,'reply:'+eventId,
+  'Журнал удалений '+journal+' для всех подключённых личных чатов. Обычные сообщения сохраняются до 72 часов.\n\n'+
+  (chats.length?'Выбери чат, чтобы настроить черновики или автоответ.':'Подключённые чаты появятся здесь после первого сообщения. По одному @имени я не могу открыть чужую личную переписку.'),
+  {markup:{inline_keyboard:[
+   [{text:(watching?'Выключить':'Включить')+' журнал для всех',callback_data:watching?'unwatch:all':'watch:all'}],
+   ...chats.map(c=>[{text:c.title.slice(0,45)+' · '+c.mode,callback_data:'chat:'+c.id}])
+  ]}});
 }
 async function status(env,eventId){
  const now=clock(env),day=new Date(now).toISOString().slice(0,10),[chats,usage,uncertain,s,connections]=await Promise.all([all(env,'SELECT title,mode,until_at FROM chats'),one(env,'SELECT * FROM usage WHERE day=?',[day]),one(env,"SELECT count(*) AS n FROM outbox WHERE state='unknown'"),one(env,'SELECT paused FROM settings WHERE id=1'),one(env,'SELECT count(*) AS n FROM connections WHERE enabled=1')]);
@@ -163,10 +169,14 @@ async function applyProposal(env,event,p){
 async function callback(env,event){
  const [op,id]=event.data.split(':');let text='Неизвестная кнопка.';
  if(op==='chat'){
-  const c=await getChat(env,id);if(c){const watching=await deletionWatch(env,id);await queue(env,'reply:'+event.id,`${c.title}\nРежим: ${c.mode}.\nКод чата для импорта: ${c.id}\nПри включении текст чата обрабатывается ${providerNames(env)}; нужно согласие участников.\nЖурнал удалений: сохраняет обычные сообщения до 72 часов и показывает копии только тебе. Включай с согласия участников.`,{markup:{inline_keyboard:c.kind==='channel'?[]:[[{text:'📝 Черновики на 2 ч',callback_data:'draft:'+c.id},{text:'🤖 Авто на 2 ч',callback_data:'auto:'+c.id}],[{text:watching?'Выключить журнал удалений':'Включить журнал удалений',callback_data:(watching?'unwatch:':'watch:')+c.id}],[{text:'⏹ Стоп',callback_data:'stop:'+c.id}]]}});return;}
+  const c=await getChat(env,id);if(c){await queue(env,'reply:'+event.id,`${c.title}\nРежим: ${c.mode}.\nКод чата для импорта: ${c.id}\nПри включении текст чата обрабатывается ${providerNames(env)}; нужно согласие участников.`,{markup:{inline_keyboard:c.kind==='channel'?[]:[[{text:'📝 Черновики на 2 ч',callback_data:'draft:'+c.id},{text:'🤖 Авто на 2 ч',callback_data:'auto:'+c.id}],[{text:'⏹ Стоп',callback_data:'stop:'+c.id}]]}});return;}
  }else if(op==='watch'||op==='unwatch'){
-  const enabled=op==='watch',ok=await setDeletionWatch(env,id,enabled);
-  text=enabled?(ok?'Журнал удалений включён для этого чата.':'Журнал доступен в подключённом личном чате.'): 'Журнал удалений выключен, сохранённые копии очищены.';
+  if(id==='all'){
+   await setDeletionWatch(env,op==='watch');
+   try{await telegram(env,'answerCallbackQuery',{callback_query_id:event.callback_id,text:'Настройка обновлена для всех чатов.'});}catch{}
+   return chatButtons(env,event.id);
+  }
+  text='Открой /chats для общей настройки журнала.';
  }else if(['draft','auto'].includes(op)){const c=await getChat(env,id);if(c){text=await proposalCard(env,event,id,'mode',{mode:op,minutes:120,instruction:'Коротко и естественно. Новые обещания, неизвестные факты и чувствительные темы согласовывать со мной.'});}}
  else if(op==='yes')text=await applyProposal(env,event,await one(env,'SELECT * FROM proposals WHERE id=?',[id]));
  else if(op==='no'){await run(env,"UPDATE proposals SET status='cancelled' WHERE id=? AND status='pending'",[id]);text='Отменено.';}
