@@ -166,7 +166,7 @@ async function callback(env,event){
   const c=await getChat(env,id);if(c){const watching=await deletionWatch(env,id);await queue(env,'reply:'+event.id,`${c.title}\nРежим: ${c.mode}.\nКод чата для импорта: ${c.id}\nПри включении текст чата обрабатывается ${providerNames(env)}; нужно согласие участников.\nЖурнал удалений: сохраняет обычные сообщения до 72 часов и показывает копии только тебе. Включай с согласия участников.`,{markup:{inline_keyboard:c.kind==='channel'?[]:[[{text:'📝 Черновики на 2 ч',callback_data:'draft:'+c.id},{text:'🤖 Авто на 2 ч',callback_data:'auto:'+c.id}],[{text:watching?'Выключить журнал удалений':'Включить журнал удалений',callback_data:(watching?'unwatch:':'watch:')+c.id}],[{text:'⏹ Стоп',callback_data:'stop:'+c.id}]]}});return;}
  }else if(op==='watch'||op==='unwatch'){
   const enabled=op==='watch',ok=await setDeletionWatch(env,id,enabled);
-  text=enabled?(ok?'Журнал удалений включён для этого чата.':'Сначала включи режим для подключённого личного чата.'): 'Журнал удалений выключен, сохранённые копии очищены.';
+  text=enabled?(ok?'Журнал удалений включён для этого чата.':'Журнал доступен в подключённом личном чате.'): 'Журнал удалений выключен, сохранённые копии очищены.';
  }else if(['draft','auto'].includes(op)){const c=await getChat(env,id);if(c){text=await proposalCard(env,event,id,'mode',{mode:op,minutes:120,instruction:'Коротко и естественно. Новые обещания, неизвестные факты и чувствительные темы согласовывать со мной.'});}}
  else if(op==='yes')text=await applyProposal(env,event,await one(env,'SELECT * FROM proposals WHERE id=?',[id]));
  else if(op==='no'){await run(env,"UPDATE proposals SET status='cancelled' WHERE id=? AND status='pending'",[id]);text='Отменено.';}

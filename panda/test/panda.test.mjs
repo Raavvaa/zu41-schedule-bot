@@ -788,3 +788,23 @@ test('stopping the chat removes deletion snapshots and cancels pending notificat
  assert.equal((await all(env,'SELECT * FROM deletion_snapshots')).length,0);
  assert.ok(!sent.some(item=>item.body.text?.includes('clear on stop')));
 });
+
+test('deletion journal works with auto-replies off and after their timer expires',async()=>{
+ await connect();
+ await acceptUpdate(env,click('watch:'+cid));
+ await drain(env);
+ assert.ok(sent.some(item=>item.body.text?.includes('Журнал удалений включён')));
+ const first=business('journal only');
+ await acceptUpdate(env,first);
+ await acceptUpdate(env,deletionUpdate(first.update_id));
+ await drain(env);
+ assert.ok(sent.some(item=>item.body.text?.endsWith('journal only')));
+ await run(env,"UPDATE chats SET mode='auto',consent=1,until_at=? WHERE id=?",[now+1000,cid]);
+ const next=business('after timeout');
+ now+=2000;
+ await acceptUpdate(env,next);
+ await acceptUpdate(env,deletionUpdate(next.update_id));
+ await drain(env);
+ assert.ok(sent.some(item=>item.body.text?.endsWith('after timeout')));
+ assert.equal(modelRequests.length,0);
+});

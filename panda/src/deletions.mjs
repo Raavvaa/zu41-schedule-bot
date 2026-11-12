@@ -1,7 +1,7 @@
 import {batch,clock,one,run,OWNER} from './store.mjs';
 
 export const DELETION_RETENTION = 72 * 3600000;
-const active = "kind='private' AND consent=1 AND mode<>'off' AND until_at>?";
+const privateChat = "chats.kind='private'";
 const media = {
  photo:['sendPhoto','photo'], video:['sendVideo','video'], document:['sendDocument','document'],
  animation:['sendAnimation','animation'], audio:['sendAudio','audio'], voice:['sendVoice','voice'],
@@ -14,7 +14,7 @@ export async function setDeletionWatch(env,scope,enabled){
  if(enabled){
   const result=await run(env,`INSERT OR IGNORE INTO deletion_watch(scope)
    SELECT chats.id FROM chats JOIN connections ON connections.id=chats.connection_id
-   WHERE chats.id=? AND connections.enabled=1 AND ${active}`,[scope,clock(env)]);
+   WHERE chats.id=? AND connections.enabled=1 AND ${privateChat}`,[scope]);
   return result.meta.changes>0||!!await deletionWatch(env,scope);
  }
  await batch(env,[
@@ -39,10 +39,10 @@ export async function captureDeletionSnapshot(env,scope,m){
  if(!body&&!fileId)return;
  await run(env,`INSERT INTO deletion_snapshots(scope,message_id,at,body,method,field,file_id)
   SELECT ?,?,?,?,?,?,? FROM chats JOIN deletion_watch ON deletion_watch.scope=chats.id
-  WHERE chats.id=? AND ${active}
+  WHERE chats.id=? AND ${privateChat}
    AND NOT EXISTS(SELECT 1 FROM outbox WHERE id=?)
   ON CONFLICT(scope,message_id) DO UPDATE SET body=excluded.body,method=excluded.method,field=excluded.field,file_id=excluded.file_id
-  WHERE ?=1`,[scope,m.message_id,at,body,media[type]?.[0]??null,media[type]?.[1]??null,fileId,scope,now,'deletion:'+scope+':'+m.message_id,m.edit_date?1:0]);
+  WHERE ?=1`,[scope,m.message_id,at,body,media[type]?.[0]??null,media[type]?.[1]??null,fileId,scope,'deletion:'+scope+':'+m.message_id,m.edit_date?1:0]);
 }
 
 export async function recordDeletions(env,scope,updateId,messageIds){
@@ -50,8 +50,8 @@ export async function recordDeletions(env,scope,updateId,messageIds){
  const ids=[...new Set(messageIds)].filter(Number.isSafeInteger);
  const chat=await one(env,`SELECT title FROM chats JOIN deletion_watch ON scope=chats.id
   JOIN connections ON connections.id=chats.connection_id
-  WHERE chats.id=? AND connections.enabled=1 AND ${active}`,[scope,now]);
- const items=[['INSERT OR IGNORE INTO inbox(id,scope,payload,state,at) VALUES(?,?,?,?,?)',[updateId,OWNER,'{}','done',now]],
+  WHERE chats.id=? AND connections.enabled=1 AND ${privateChat}`,[scope]);
+ const items=[['INSERT INTO audit(kind,at) VALUES(?,?)',[chat?'deletion_watch_received':'deletion_watch_inactive',now]],['INSERT OR IGNORE INTO inbox(id,scope,payload,state,at) VALUES(?,?,?,?,?)',[updateId,OWNER,'{}','done',now]],
   ["UPDATE chats SET revision=revision+1,summary='' WHERE id=?",[scope]],
   ['DELETE FROM conversation_state WHERE chat_id=?',[scope]]];
  for(const mid of ids){
