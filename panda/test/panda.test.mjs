@@ -89,7 +89,7 @@ test('chats arguments and bot mentions never go to the model',async()=>{
 test('here in control DM presents chat selection rather than promising to help a peer',async()=>{
  await connect();await drain(env);sent=[];await acceptUpdate(env,privateUpdate('панда, помогай здесь'));await drain(env);
  assert.equal(modelRequests.length,0);assert.equal((await all(env,'SELECT * FROM proposals')).length,0);
- assert.ok(sent.some(x=>x.body.reply_markup?.inline_keyboard[0][0].callback_data==='chat:'+cid));
+ assert.ok(sent.some(x=>x.body.reply_markup?.inline_keyboard.flat().some(button=>button.callback_data==='chat:'+cid)));
 });
 test('status distinguishes profile connection from discovery of peer chats',async()=>{
  await acceptUpdate(env,{update_id:++seq,business_connection:{id:connection,user:{id:Number(owner)},is_enabled:true,rights:{can_reply:true}}});
@@ -132,7 +132,7 @@ test('auto command parsing excludes quoted, negated and broader instructions',()
 test('auto command in control DM cannot select or enable a peer implicitly',async()=>{
  await connect();await drain(env);sent=[];await acceptUpdate(env,privateUpdate('панда, отвечай на все сообщения этого чата'));await drain(env);
  assert.equal((await one(env,'SELECT mode FROM chats')).mode,'off');assert.equal(modelRequests.length,0);
- assert.ok(sent.some(x=>x.body.reply_markup?.inline_keyboard[0][0].callback_data==='chat:'+cid));
+ assert.ok(sent.some(x=>x.body.reply_markup?.inline_keyboard.flat().some(button=>button.callback_data==='chat:'+cid)));
 });
 test('peer cannot use direct auto command to opt in',async()=>{
  await connect();await acceptUpdate(env,business('панда, отвечай на все сообщения этого чата'));await drain(env);
