@@ -27,7 +27,7 @@ beforeEach(async()=>{
  now=1800000000000;seq=0;sent=[];models=[];modelRequests=[];
  // Legacy behavior fixtures bypass waiting; dedicated queue tests use 4000ms.
  env.PEER_DEBOUNCE_MS='0';delete env.FREE_ONLY;delete env.SLEEP;delete env.AI;delete env.WORKERS_AI_ENABLED;delete env.WORKERS_AI_MODEL;delete env.WORKERS_AI_TIMEOUT_MS;
- for(const table of ['owner_requests','owner_tasks','letter_case_preferences','connections','chats','messages','facts','inbox','proposals','outbox','usage','provider_usage','chat_style','chat_changes','chat_facts','background_jobs','fact_extraction','conversation_state','chat_aliases','providers','audit'])await run(env,'DELETE FROM '+table);
+ for(const table of ['deletion_watch','deletion_snapshots','owner_requests','owner_tasks','letter_case_preferences','connections','chats','messages','facts','inbox','proposals','outbox','usage','provider_usage','chat_style','chat_changes','chat_facts','background_jobs','fact_extraction','conversation_state','chat_aliases','providers','audit'])await run(env,'DELETE FROM '+table);
  await run(env,'UPDATE settings SET paused=0,lock_token=NULL,lock_until=0,cleanup_at=0');env.NOW=()=>now;
  env.FETCH=async(url,options={})=>{
   if(url.includes('/chat/completions')){modelRequests.push({url,body:JSON.parse(options.body)});const m=models.shift();if(typeof m==='function')return m(url,options);if(m instanceof Response)return m;if(m instanceof Error)throw m;return response({choices:[{message:m||reply('Привет, я здесь.')}],usage:{total_tokens:25}});}
@@ -734,4 +734,57 @@ test('model routing notes cannot be sent as a peer auto-reply',async()=>{
  await drain(env);
  assert.equal(sent.filter(s=>String(s.body.chat_id)===peer).length,0);
  assert.ok(await one(env,"SELECT * FROM audit WHERE kind='invalid_peer_output'"));
+});
+
+const deletionUpdate=(...message_ids)=>({update_id:++seq,deleted_business_messages:{business_connection_id:connection,chat:{id:Number(peer)},message_ids}});
+test('deletion journal reports text and media once, privately and outside model history',async()=>{
+ await enabled();
+ await acceptUpdate(env,click('watch:'+cid));
+ await drain(env);
+ const original=business('ordinary text'),photo=business(undefined,peer,{caption:'ordinary photo',photo:[{file_id:'small'},{file_id:'large'}]});
+ await acceptUpdate(env,original);
+ await acceptUpdate(env,photo);
+ const deletion=deletionUpdate(original.update_id,photo.update_id);
+ await acceptUpdate(env,deletion);
+ await acceptUpdate(env,deletion);
+ await drain(env);
+ assert.equal(sent.filter(item=>item.body.text?.endsWith('ordinary text')).length,1);
+ const attachment=sent.find(item=>item.method==='sendPhoto');
+ assert.equal(attachment.body.photo,'large');
+ assert.equal(attachment.body.chat_id,owner);
+ assert.equal(attachment.body.protect_content,true);
+ assert.equal((await all(env,'SELECT * FROM deletion_snapshots')).length,0);
+ assert.equal(await one(env,'SELECT * FROM messages WHERE id=?',[cid+':'+original.update_id]),null);
+});
+
+test('deletion journal is opt-in and excludes flagged temporary or protected media',async()=>{
+ await enabled();
+ await acceptUpdate(env,business('before opt-in'));
+ assert.equal((await all(env,'SELECT * FROM deletion_snapshots')).length,0);
+ await acceptUpdate(env,click('watch:'+cid));
+ await drain(env);
+ const temp=business(undefined,peer,{caption:'private caption',video:{file_id:'never-store',ttl_seconds:10}});
+ await acceptUpdate(env,temp);
+ const protectedMedia=business(undefined,peer,{has_protected_content:true,photo:[{file_id:'never-copy'}]});
+ await acceptUpdate(env,protectedMedia);
+ assert.equal((await all(env,'SELECT * FROM deletion_snapshots')).length,0);
+ await acceptUpdate(env,deletionUpdate(temp.update_id,protectedMedia.update_id));
+ await drain(env);
+ assert.ok(sent.some(item=>item.body.text?.includes('Сохранённой копии нет')));
+ assert.ok(!JSON.stringify(sent).includes('private caption'));
+ assert.ok(!sent.some(item=>['sendPhoto','sendVideo'].includes(item.method)));
+});
+
+test('stopping the chat removes deletion snapshots and cancels pending notifications',async()=>{
+ await enabled();
+ await acceptUpdate(env,click('watch:'+cid));
+ await drain(env);
+ const original=business('clear on stop');
+ await acceptUpdate(env,original);
+ await acceptUpdate(env,deletionUpdate(original.update_id));
+ await stop(env,cid);
+ await drain(env);
+ assert.equal((await all(env,'SELECT * FROM deletion_watch')).length,0);
+ assert.equal((await all(env,'SELECT * FROM deletion_snapshots')).length,0);
+ assert.ok(!sent.some(item=>item.body.text?.includes('clear on stop')));
 });

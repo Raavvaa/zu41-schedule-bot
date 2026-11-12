@@ -50,6 +50,9 @@ export async function stop(env,scope=null){
  const now=clock(env),where=scope?' WHERE id=?':'',args=scope?[scope]:[];
  const items=[[`UPDATE chats SET mode='off',revision=revision+1${where}`,args],[`UPDATE proposals SET status='cancelled' WHERE status='pending'${scope?' AND scope=?':''}`,args],[`UPDATE outbox SET state='cancelled' WHERE state='pending' AND mode<>'owner'${scope?' AND scope=?':''}`,args]];
  items.push(['DELETE FROM owner_tasks WHERE owner_id=?'+(scope?' AND target=?':''),scope?[String(env.OWNER_ID),scope]:[String(env.OWNER_ID)]]);
+ items.push(['DELETE FROM deletion_watch'+(scope?' WHERE scope=?':''),args],
+  ['DELETE FROM deletion_snapshots'+(scope?' WHERE scope=?':''),args],
+  ["UPDATE outbox SET state='cancelled',payload='{}' WHERE state='pending' AND id GLOB ?",[scope?'deletion:'+scope+':*':'deletion:*']]);
  if(!scope)items.unshift(['UPDATE settings SET paused=1 WHERE id=1']);
  await batch(env,items);await audit(env,'owner_stop');return now;
 }
@@ -66,7 +69,7 @@ export async function maintenance(env){
  for(const row of uncertain){await run(env,"UPDATE outbox SET state='unknown',error='interrupted' WHERE id=? AND state='sending'",[row.id]);await queue(env,'uncertain:'+row.id,'Не удалось подтвердить результат одной отправки. Повторять её автоматически не буду. Проверь чат; состояние видно в /status.');}
  const s=await one(env,'SELECT cleanup_at FROM settings WHERE id=1');
  if(now-s.cleanup_at<3600000)return;
- await batch(env,[['DELETE FROM messages WHERE at<?',[now-72*3600000]],["DELETE FROM inbox WHERE state='done' AND at<?",[now-7*86400000]],["UPDATE proposals SET status='expired',payload='{}' WHERE status='pending' AND expires_at<?",[now]],["UPDATE outbox SET state='expired',payload='{}' WHERE state='pending' AND expires_at<?",[now]],["UPDATE proposals SET payload='{}' WHERE status<>'pending' AND at<?",[now-86400000]],["UPDATE outbox SET payload='{}' WHERE state IN ('sent','failed','cancelled','expired') AND at<?",[now-86400000]],['DELETE FROM audit WHERE at<?',[now-30*86400000]],['UPDATE settings SET cleanup_at=? WHERE id=1',[now]]]);
+ await batch(env,[['DELETE FROM deletion_snapshots WHERE at<?',[now-72*3600000]],['DELETE FROM messages WHERE at<?',[now-72*3600000]],["DELETE FROM inbox WHERE state='done' AND at<?",[now-7*86400000]],["UPDATE proposals SET status='expired',payload='{}' WHERE status='pending' AND expires_at<?",[now]],["UPDATE outbox SET state='expired',payload='{}' WHERE state='pending' AND expires_at<?",[now]],["UPDATE proposals SET payload='{}' WHERE status<>'pending' AND at<?",[now-86400000]],["UPDATE outbox SET payload='{}' WHERE state IN ('sent','failed','cancelled','expired') AND at<?",[now-86400000]],['DELETE FROM audit WHERE at<?',[now-30*86400000]],['UPDATE settings SET cleanup_at=? WHERE id=1',[now]]]);
 }
 
 export const providerDefaults={nvidia:[200000,250],cloudflare:[200000,500],groq:[200000,500],siliconflow:[500000,1000],openrouter:[50000,100]};

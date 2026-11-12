@@ -1,3 +1,4 @@
+import {captureDeletionSnapshot,deletionWatch,recordDeletions,setDeletionWatch} from './deletions.mjs';
 import {formatDuration,MODE_DURATION_ERROR,validModeDuration} from './duration.mjs';
 import {formatLetterCase,letterCase} from './preferences.mjs';
 import {background} from './background.mjs';
@@ -75,8 +76,7 @@ export async function acceptUpdate(env,u){
  if(u.deleted_business_messages){
   const d=u.deleted_business_messages;if(!await one(env,'SELECT id FROM connections WHERE id=?',[d.business_connection_id]))return;
   const scope=await key(d.business_connection_id+':'+d.chat.id);
-  await run(env,'UPDATE chats SET revision=revision+1,summary=? WHERE id=?',['',scope]);
-  for(const mid of d.message_ids??[])await batch(env,[['DELETE FROM messages WHERE id=?',[scope+':'+mid]],['DELETE FROM chat_facts WHERE chat_id=? AND source_message_id=?',[scope,scope+':'+mid]]]);await run(env,'DELETE FROM conversation_state WHERE chat_id=?',[scope]);return;
+  await recordDeletions(env,scope,id,d.message_ids??[]);return;
  }
  if(u.callback_query){
   const q=u.callback_query;if(String(q.from?.id)!==owner)return;
@@ -92,6 +92,7 @@ export async function acceptUpdate(env,u){
   await audit(env,'business_message_accepted');
   const scope=await key(m.business_connection_id+':'+m.chat.id),text=String(m.text??m.caption??''),isOwner=String(m.from?.id)===owner;
   await run(env,'INSERT INTO chats(id,connection_id,telegram_id,title) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title',[scope,m.business_connection_id,String(m.chat.id),[m.chat.first_name,m.chat.last_name].filter(Boolean).join(' ')||m.chat.username||'Личный чат']);
+  await captureDeletionSnapshot(env,scope,m);
   if(m.chat.username)await run(env,'INSERT OR IGNORE INTO chat_aliases(chat_id,alias) VALUES(?,?)',[scope,String(m.chat.username).toLowerCase()]);
   if(isOwner&&prefix(text)&&!u.edited_business_message){
    const command=strip(text);if(stopCommand(command))await stop(env,stopAllCommand(command)?null:scope);
@@ -162,7 +163,10 @@ async function applyProposal(env,event,p){
 async function callback(env,event){
  const [op,id]=event.data.split(':');let text='Неизвестная кнопка.';
  if(op==='chat'){
-  const c=await getChat(env,id);if(c){await queue(env,'reply:'+event.id,`${c.title}\nРежим: ${c.mode}.\nКод чата для импорта: ${c.id}\nПри включении текст чата обрабатывается ${providerNames(env)}; нужно согласие участников.`,{markup:{inline_keyboard:c.kind==='channel'?[]:[[{text:'📝 Черновики на 2 ч',callback_data:'draft:'+c.id},{text:'🤖 Авто на 2 ч',callback_data:'auto:'+c.id}],[{text:'⏹ Стоп',callback_data:'stop:'+c.id}]]}});return;}
+  const c=await getChat(env,id);if(c){const watching=await deletionWatch(env,id);await queue(env,'reply:'+event.id,`${c.title}\nРежим: ${c.mode}.\nКод чата для импорта: ${c.id}\nПри включении текст чата обрабатывается ${providerNames(env)}; нужно согласие участников.\nЖурнал удалений: сохраняет обычные сообщения до 72 часов и показывает копии только тебе. Включай с согласия участников.`,{markup:{inline_keyboard:c.kind==='channel'?[]:[[{text:'📝 Черновики на 2 ч',callback_data:'draft:'+c.id},{text:'🤖 Авто на 2 ч',callback_data:'auto:'+c.id}],[{text:watching?'Выключить журнал удалений':'Включить журнал удалений',callback_data:(watching?'unwatch:':'watch:')+c.id}],[{text:'⏹ Стоп',callback_data:'stop:'+c.id}]]}});return;}
+ }else if(op==='watch'||op==='unwatch'){
+  const enabled=op==='watch',ok=await setDeletionWatch(env,id,enabled);
+  text=enabled?(ok?'Журнал удалений включён для этого чата.':'Сначала включи режим для подключённого личного чата.'): 'Журнал удалений выключен, сохранённые копии очищены.';
  }else if(['draft','auto'].includes(op)){const c=await getChat(env,id);if(c){text=await proposalCard(env,event,id,'mode',{mode:op,minutes:120,instruction:'Коротко и естественно. Новые обещания, неизвестные факты и чувствительные темы согласовывать со мной.'});}}
  else if(op==='yes')text=await applyProposal(env,event,await one(env,'SELECT * FROM proposals WHERE id=?',[id]));
  else if(op==='no'){await run(env,"UPDATE proposals SET status='cancelled' WHERE id=? AND status='pending'",[id]);text='Отменено.';}
@@ -241,6 +245,12 @@ export async function flush(env,deadline){
     if(row.mode==='approved'||row.mode==='avatar')await queue(env,'receipt:'+row.id,row.mode==='avatar'?'Фото профиля изменено — Telegram подтвердил.':'Отправлено — Telegram подтвердил.');
    }
   }catch(error){
+   if(row.id.startsWith('deletion:')&&row.method!=='sendMessage'&&error.code==='400'){
+    const payload=JSON.parse(row.payload);
+    const text=(payload.caption||'В чате удалили вложение.')+'\nTelegram больше не отдаёт файл.';
+    await run(env,"UPDATE outbox SET method='sendMessage',payload=?,state='pending' WHERE id=?",[JSON.stringify({chat_id:env.OWNER_ID,text,protect_content:true}),row.id]);
+    continue;
+   }
    if(error.code==='429'){
     await run(env,"UPDATE outbox SET state='pending',not_before=?,error='429' WHERE id=?",[clock(env)+Math.max(error.retry,2)*1000,row.id]);
     await audit(env,'telegram_send_retry');
