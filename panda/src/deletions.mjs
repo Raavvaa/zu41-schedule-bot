@@ -1,4 +1,4 @@
-import {batch,clock,one,run,OWNER} from './store.mjs';
+import {all,batch,clock,one,run,OWNER} from './store.mjs';
 
 export const DELETION_RETENTION = 72 * 3600000;
 const privateChat = "chats.kind='private'";
@@ -49,12 +49,28 @@ export async function recordDeletions(env,scope,updateId,messageIds){
  const chat=await one(env,`SELECT title FROM chats
   JOIN connections ON connections.id=chats.connection_id
   WHERE chats.id=? AND connections.enabled=1 AND ${privateChat} AND ${watchEnabled}`,[scope]);
- const items=[['INSERT INTO audit(kind,at) VALUES(?,?)',[chat?'deletion_watch_received':'deletion_watch_inactive',now]],['INSERT OR IGNORE INTO inbox(id,scope,payload,state,at) VALUES(?,?,?,?,?)',[updateId,OWNER,'{}','done',now]],
+ // Limit each database batch. Keep the update unacknowledged until every
+ // group finishes; stable outbox IDs make a retried group idempotent.
+ for(let offset=0;offset<ids.length;offset+=20){
+  await recordDeletionGroup(env,scope,ids.slice(offset,offset+20),chat,now);
+ }
+ await batch(env,[
+  ['INSERT INTO audit(kind,at) VALUES(?,?)',[chat?'deletion_watch_received':'deletion_watch_inactive',now]],
+  ['INSERT OR IGNORE INTO inbox(id,scope,payload,state,at) VALUES(?,?,?,?,?)',[updateId,OWNER,'{}','done',now]]
+ ]);
+}
+
+async function recordDeletionGroup(env,scope,ids,chat,now){
+ const snapshots=chat?await all(env,`SELECT * FROM deletion_snapshots WHERE scope=? AND at>?
+  AND message_id IN (${ids.map(()=>'?').join(',')})`,[scope,now-DELETION_RETENTION,...ids]):[];
+ const byId=new Map(snapshots.map(snapshot=>[snapshot.message_id,snapshot]));
+ const items=[
   ["UPDATE chats SET revision=revision+1,summary='' WHERE id=?",[scope]],
-  ['DELETE FROM conversation_state WHERE chat_id=?',[scope]]];
+  ['DELETE FROM conversation_state WHERE chat_id=?',[scope]]
+ ];
  for(const mid of ids){
   if(chat){
-   const snapshot=await one(env,'SELECT * FROM deletion_snapshots WHERE scope=? AND message_id=? AND at>?',[scope,mid,now-DELETION_RETENTION]);
+   const snapshot=byId.get(mid);
    const title='Удалено в чате «'+chat.title.slice(0,150)+'».';
    const description=title+(snapshot?.body?'\n\n'+snapshot.body:'');
    const method=snapshot?.file_id?snapshot.method:'sendMessage';

@@ -834,3 +834,26 @@ test('global deletion setting covers new chats and survives migrations when swit
  assert.ok(!sent.some(item=>item.body.text?.endsWith('after global off')));
  assert.equal((await all(env,'SELECT * FROM deletion_snapshots')).length,0);
 });
+
+test('large deletion updates are split into bounded batches and acknowledged once',async()=>{
+ await connect();
+ await acceptUpdate(env,click('watch:all'));
+ await drain(env);
+ const original=business('saved in large deletion');
+ await acceptUpdate(env,original);
+ const ids=[original.update_id,...Array.from({length:125},(_,i)=>1000+i)];
+ const update=deletionUpdate(...ids);
+ const originalDb=env.DB;
+ env.DB={prepare:sql=>originalDb.prepare(sql),batch:statements=>{
+  assert.ok(statements.length<=102);
+  return originalDb.batch(statements);
+ }};
+ try{
+  await acceptUpdate(env,update);
+  await acceptUpdate(env,update);
+  const rows=await all(env,"SELECT payload FROM outbox WHERE id GLOB 'deletion:*'");
+  assert.equal(rows.length,ids.length);
+  assert.ok(rows.some(row=>JSON.parse(row.payload).text.endsWith('saved in large deletion')));
+  assert.equal((await one(env,'SELECT state FROM inbox WHERE id=?',[String(update.update_id)])).state,'done');
+ }finally{env.DB=originalDb;}
+});
