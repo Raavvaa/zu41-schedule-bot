@@ -1,3 +1,4 @@
+import {refreshCandidates} from './source.mjs';
 import {processUpdate} from './dialog.mjs';
 import {sql,one,rows,run,dayKey,addDays,lock} from './core.mjs';
 import {planningTick,deliveryTick,refreshTick,cleanup,fastReplies} from './scheduler.mjs';
@@ -22,7 +23,7 @@ export async function dispatch(env,now){
  const waiting=await rows(env,"SELECT DISTINCT user_id%8 AS lane FROM updates WHERE state='pending' LIMIT 8");
  const users=active?await rows(env,'SELECT DISTINCT lane FROM users WHERE blocked=0 AND next_plan<=? LIMIT 8',now):[];
  const plans=[...new Set([...waiting,...users].map(x=>x.lane))].map(lane=>({lane}));
- const refresh=active?await rows(env,`SELECT DISTINCT s.group_id%4 AS lane FROM schedules s WHERE date>=? AND date<=? AND next_refresh<=?
+ const refresh=active&&env.SHARED_CACHE==='true'?[...new Set((await refreshCandidates(env,now)).map(x=>x.group_id%4))].map(lane=>({lane})):active?await rows(env,`SELECT DISTINCT s.group_id%4 AS lane FROM schedules s WHERE date>=? AND date<=? AND next_refresh<=?
   AND EXISTS(SELECT 1 FROM users u WHERE u.group_id=s.group_id AND u.blocked=0) LIMIT 4`,today,addDays(today,1),now):[];
  const urgent=lanes.map(x=>({body:{type:'deliver',lane:x.lane}}));
  const maintenance=[...plans.map(x=>({body:{type:'plan',lane:x.lane}})),...refresh.map(x=>({body:{type:'refresh',lane:x.lane}}))];

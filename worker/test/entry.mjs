@@ -2,12 +2,20 @@ import {dispatch,reserveQueue} from '../src/dispatch.mjs';
 import {countedDB} from './budget.mjs';
 // Local workerd-only test entry. This file is NEVER the deployed Worker entry.
 import worker,{webhook} from '../src/index.mjs';
-import {parseWeek,parseGroups,getSchedule,catalog} from '../src/source.mjs';
+import {parseWeek,parseGroups,getSchedule,catalog,refreshCandidates} from '../src/source.mjs';
 import {planningTick,planUser,deliveryTick,refreshTick,deliverJob,fastReplies} from '../src/scheduler.mjs';
 import {one} from '../src/core.mjs';
 export default {async fetch(req,env,ctx){
  const stats={queries:0,read:0,written:0};env={...env,DB:countedDB(env.DB,stats)};
  const url=new URL(req.url);
+ if(url.pathname.startsWith('/test/cache-')){
+  env={...env,SHARED_CACHE:'true'};const now=Number(url.searchParams.get('now'));
+  if(url.pathname==='/test/cache-source')return Response.json(await getSchedule(env,Number(url.searchParams.get('group')),url.searchParams.get('date'),now,{preferCache:true}));
+  if(url.pathname==='/test/cache-candidates')return Response.json(await refreshCandidates(env,now));
+  if(url.pathname==='/test/cache-refresh'){await refreshTick(env,Number(url.searchParams.get('lane')),now);return Response.json({ok:true,budget:stats});}
+  if(url.pathname==='/test/cache-deliver'){await deliveryTick(env,Number(url.searchParams.get('lane')),now);return Response.json({ok:true,budget:stats});}
+  if(url.pathname==='/test/cache-webhook')return webhook(req,env,now);
+ }
  if(url.pathname==='/test/parse')return Response.json(await parseWeek(new Response(await req.text()),url.searchParams.get('group')));
  if(url.pathname==='/test/catalog'){const gs=await catalog(env,Number(url.searchParams.get('now')));return Response.json({count:gs.length,hasExample:gs.some(g=>g.id===63)});}
  if(url.pathname==='/test/groups')return Response.json(await parseGroups(new Response(await req.text())));
