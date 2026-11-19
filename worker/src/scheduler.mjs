@@ -97,7 +97,7 @@ export async function deliverJob(env,j,now,clock=()=>now){
    }
    if(now>=start)return finish(env,j,'skipped',now,'already_started');
    const seconds=Math.max(1,Math.ceil((start-now)/1000));const remaining=seconds<60?seconds+' сек.':Math.ceil(seconds/60)+' мин.';
-   const text=`🔔 Через ${remaining} — ${l.number}-я пара\n🕥 ${l.start}–${l.end}\n`+l.variants.map(v=>`${v.subgroup?'Подгруппа '+v.subgroup+'\n':''}📚 ${v.subject}${v.teacher?'\n👨‍🏫 '+v.teacher:''}${v.room?'\n📍 Кабинет '+v.room:''}`).join('\n')+`\n${ROOT}/groups/${u.group_id}?date=${j.date}`;
+   const text=`🔔 Через ${remaining} — ${l.number}-я пара\n🕥 ${l.start}–${l.end}\n`+l.variants.map(v=>`${v.subgroup?'Подгруппа '+v.subgroup+'\n':''}${v.replacement?'🔁 Замена · ':''}📚 ${v.subject}${v.teacher?'\n👨‍🏫 '+v.teacher:''}${v.room?'\n📍 Кабинет '+v.room:''}`).join('\n')+`\n${ROOT}/groups/${u.group_id}?date=${j.date}`;
    payload=pack(text)[0];
    // Full oversized text is preserved as a multipart notification below.
    const parts=pack(text);if(parts.length>1)await createParts(env,j,parts.slice(1),now);
