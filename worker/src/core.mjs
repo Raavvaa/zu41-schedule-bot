@@ -35,7 +35,7 @@ export function pack(text) {
  if(current)parts.push({text:esc(current),parse_mode:'HTML'});
  return parts;
 }
-export function lessonText(l){return `${l.number}-я пара · ${l.start}–${l.end}\n`+l.variants.map(v=>`${v.subgroup?'['+v.subgroup+'] ':''}📚 ${v.subject}${v.teacher?'\n👨‍🏫 '+v.teacher:''}${v.room?'\n📍 Кабинет '+v.room:''}`).join('\n');}
+export function lessonText(l){return `${l.number}-я пара · ${l.start}–${l.end}\n`+l.variants.map(v=>`${v.subgroup?'['+v.subgroup+'] ':''}${v.replacement?'🔁 Замена · ':''}📚 ${v.subject}${v.teacher?'\n👨‍🏫 '+v.teacher:''}${v.room?'\n📍 Кабинет '+v.room:''}`).join('\n');}
 export function formatDay(s,u) {
  const link=`${ROOT}/groups/${u.group_id}?date=${s.date}`;
  const heading=`📅 ${s.date.split('-').reverse().join('.')}\n🎓 ${u.group_name}${u.subgroup==='both'?' · обе подгруппы':' · подгруппа '+u.subgroup}`;
