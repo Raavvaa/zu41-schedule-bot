@@ -14,8 +14,8 @@ export async function parseGroups(response){
  return [...groups.values()].sort((a,b)=>a.name.localeCompare(b.name,'ru',{numeric:true}));
 }
 export async function parseWeek(response,groupName){
- let title='',day=null,slot=null,item=null;const days=[];
- const textHandler = field => ({text(t){if(item)item[field]+=t.text;}});
+ let title='',day=null,slot=null,item=null,replacementDepth=0;const days=[];
+ const textHandler = field => ({text(t){if(item&&!(field==='subject'&&replacementDepth>0))item[field]+=t.text;}});
  const rw=new HTMLRewriter().on('title',{text(t){title+=t.text;}})
  .on('[data-testid^="LessonsDay-"]',{element(e){day={title:'',empty:'',lessons:[],invalid:false};const d=day;days.push(d);e.onEndTag(()=>{day=null;});}})
  .on('[data-testid="LessonsDayTitle"]',{text(t){if(day)day.title+=t.text;}})
@@ -23,7 +23,9 @@ export async function parseWeek(response,groupName){
  .on('[data-testid^="LessonsSlot-"]',{element(e){if(!day)return;slot={number:'',time:'',variants:[],invalid:false};const s=slot,d=day;d.lessons.push(s);e.onEndTag(()=>{slot=null;});}})
  .on('[data-testid="LessonNumber"]',{text(t){if(slot)slot.number+=t.text;}})
  .on('[data-testid="LessonSlotTime"]',{text(t){if(slot)slot.time+=t.text;}})
- .on('[data-testid="Lesson"]',{element(e){if(!slot)return;item={subject:'',teacher:'',room:'',subgroup:'',window:(e.getAttribute('class')??'').includes('info-lesson--window')};const v=item;slot.variants.push(v);e.onEndTag(()=>{item=null;});}})
+ .on('[data-testid="Lesson"]',{element(e){if(!slot)return;item={subject:'',teacher:'',room:'',subgroup:'',replacement:false,window:(e.getAttribute('class')??'').includes('info-lesson--window')};const v=item;slot.variants.push(v);e.onEndTag(()=>{item=null;});}})
+ .on('.lesson-replacement',{element(e){if(item)item.replacement=true;replacementDepth++;e.onEndTag(()=>{replacementDepth=Math.max(0,replacementDepth-1);});}})
+ .on('[data-testid="LessonReplacementBadge"]',{element(e){if(item)item.replacement=true;replacementDepth++;e.onEndTag(()=>{replacementDepth=Math.max(0,replacementDepth-1);});}})
  .on('[data-testid="LessonSubject"]',textHandler('subject'))
  .on('[data-testid="LessonPeople"]',textHandler('teacher'))
  .on('[data-testid="LessonPeople"] a',{element(){if(item&&item.teacher.trim())item.teacher+='; ';}})
@@ -43,11 +45,18 @@ export async function parseWeek(response,groupName){
    for(const v of s.variants){
     if(v.window)continue;
     let subgroup='';const sub=htmlNorm(v.subgroup);let subject=htmlNorm(v.subject);
-    if(sub){const m=sub.match(/^(?:п\s*\/\s*гр|подгруппа)\s*([12])$/i);if(!m)throw new Error('invalid_subgroup');subgroup=m[1];if(subject.startsWith(sub))subject=norm(subject.slice(sub.length));}
+    if(sub){
+     const label=sub.toLowerCase().replace(/\s+/g,' ');
+     if(label==='вся группа')subgroup='';
+     else{const m=sub.match(/^(?:п\s*\/\s*гр|подгруппа)\s*([12])$/i);if(!m)throw new Error('invalid_subgroup');subgroup=m[1];}
+     if(subject.slice(0,sub.length).toLowerCase()===sub.toLowerCase())subject=norm(subject.slice(sub.length));
+    }
     if(!subject)throw new Error('invalid_subject');
     // A cancellation is accepted only when explicitly rendered by the source.
     if(/^(?:Пары не будет|Занятие отменено)$/i.test(subject))continue;
-    variants.push({subject,teacher:htmlNorm(v.teacher),room:htmlNorm(v.room),subgroup});
+    const variant={subject,teacher:htmlNorm(v.teacher),room:htmlNorm(v.room),subgroup};
+    if(v.replacement)variant.replacement=true;
+    variants.push(variant);
    }
    if(variants.length)lessons.push({number,start:t[1],end:t[2],variants});
   }
