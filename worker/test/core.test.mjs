@@ -15,6 +15,12 @@ test('subgroup filtering always includes shared lessons',()=>{
  const ls=visible(data,'1');assert.equal(ls.length,2);assert.deepEqual(ls[0].variants.map(v=>v.subject),['Общая','А']);
  assert.equal(visible(data,'both')[0].variants.length,3);
 });
+test('replacement marker stays separate from the subject in daily and next-lesson messages',()=>{
+ const s={...data,lessons:[{number:1,start:'09:00',end:'10:30',variants:[{subject:'Геодезия',subgroup:'',teacher:'Глинкова О. М.',room:'316',replacement:true}]}]};
+ const text=formatDay(s,{...u,subgroup:'1'});
+ assert.match(text,/🔁 Замена · 📚 Геодезия/);
+ assert.match(nextLesson(s,{...u,subgroup:'1'},at(s.date,'08:50')),/🔁 Замена · 📚 Геодезия/);
+});
 test('current class and next class, never misleading remaining 10 minutes',()=>{
  assert.match(nextLesson(data,u,at(data.date,'09:10')),/Сейчас идёт/);
  assert.match(nextLesson(data,u,at(data.date,'08:50')),/Следующая пара/);
